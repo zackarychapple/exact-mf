@@ -15,6 +15,7 @@ ibex2-sqlite = { path = "../vendor/ibex/crates/ibex2-sqlite" }
 ibex2 = { path = "../vendor/ibex/crates/ibex2", default-features = false, features = ["bindings", "intl"] }
 hermes-lean-sys = { path = "../vendor/ibex/crates/hermes-lean-sys", default-features = false, features = ["link-lean"] }
 exact-data = { path = "../data" }
+exact-update = { path = "../update" }
 exact-js-value = { path = "value" }
 exact-plan = { path = "../plan" }
 exact-runner = { path = "../runner" }

@@ -81,6 +81,8 @@ pub use exact_runner::Placement;
 pub use native::{json, Changed, Json, LaterHandler, NativeModule, NativeReply};
 pub use native_storage::{NativeStorage, SqliteFile};
 pub use paired::{Bytecode, Paired};
+mod remote;
+pub use remote::PreparedRemote;
 #[doc(hidden)]
 pub use storage::CompressionHold;
 
