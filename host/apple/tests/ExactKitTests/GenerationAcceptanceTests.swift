@@ -89,4 +89,34 @@ final class GenerationAcceptanceTests: XCTestCase {
         XCTAssertEqual(durableCommits, 1)
         XCTAssertEqual(try slots(), before)
     }
+    func testIndependentOwnersCommitOnlyTheirOwnSessions() throws {
+        #if os(macOS)
+        _ = NSApplication.shared
+        #endif
+        let host = ExactApp(), remote = ExactApp()
+        let plan = try fixturePlan("HEADLESS")
+        let a = host.makeSession(label: "host"), b = remote.makeSession(label: "remote")
+        defer { a.destroy(); b.destroy() }
+        for session in [a, b] {
+            session.clock = 0
+            XCTAssertNil(session.boot(plan: plan, size: CGSize(width: 200, height: 400)).error)
+        }
+        let box = try XCTUnwrap(a.presenter.views.values.first { $0.props["testId"] == "box" })
+        a.apply(a.runtime.press(box.id, now: a.now()))
+        let before = a.agent(#"{"op":"state"}"#)
+        let hostGeneration = a.generation
+        let remoteGeneration = b.generation
+        var commits = 0
+        XCTAssertTrue(remote.applyGeneration(ExactGeneration(plan: plan, assets: remote.resolver)) {
+            commits += 1
+            return true
+        })
+        XCTAssertEqual(commits, 1)
+        XCTAssertEqual(a.generation, hostGeneration)
+        XCTAssertEqual(b.generation, remoteGeneration + 1)
+        XCTAssertEqual(a.agent(#"{"op":"state"}"#), before)
+        XCTAssertTrue(a.app === host)
+        XCTAssertTrue(b.app === remote)
+    }
+
 }

@@ -123,7 +123,8 @@ public final class ExactApp {
     /// The one dev connection: the app URL `dev.mjs` prints, resolved
     /// and subscribed once; every `{seq}` applies to every session.
     private(set) var connection: PlanURL?
-    private init() {
+    /// Create an independent owner for sessions and prepared generations.
+    public init() {
         WidgetContainer.configure()
         #if canImport(UIKit)
         let fallback = Bundle.main.bundlePath

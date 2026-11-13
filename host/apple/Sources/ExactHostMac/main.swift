@@ -48,7 +48,14 @@ tableScroll.hasVerticalScroller = true
 
 /// Two sessions of the one plan, each in its own pane, each
 /// with its own clock under the agent.
-let a = exact.makeSession(label: "a")
+// An explicit host plan gives the leading session its own generation owner.
+let hostPlan = ExactEnv.environment["EXACT_HOST_PLAN"].flatMap { FileManager.default.contents(atPath: $0) }
+let hostOwner = hostPlan.map { plan in
+    let owner = ExactApp()
+    owner.installInitial(ExactGeneration(plan: plan, assets: AssetResolver(root: exact.assetRoot)))
+    return owner
+}
+let a = (hostOwner ?? exact).makeSession(label: "a")
 let b = exact.makeSession(label: "b")
 if ExactEnv.agentFreezes { a.clock = 0; b.clock = 0 }
 let viewA = ExactView(session: a)
@@ -243,7 +250,7 @@ func finishLaunching() {
     for (label, view) in [("a", viewA), ("b", viewB)] {
         let pane = panes[label]!
         let size = pane.bounds.size
-        if let path = ExactEnv.environment["EXACT_PLAN"], let bytes = FileManager.default.contents(atPath: path) {
+        if !(label == "a" && hostOwner != nil), let path = ExactEnv.environment["EXACT_PLAN"], let bytes = FileManager.default.contents(atPath: path) {
             view.session.boot(plan: bytes, size: size)
         } else {
             view.session.boot(size: size)
