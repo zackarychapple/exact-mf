@@ -1063,3 +1063,75 @@ fn a_live_rust_swap_refuses_before_loading_while_a_request_is_pending() {
     assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
     assert_eq!(presenter.host().runner().pending(), pending);
 }
+
+#[test]
+fn independent_presenters_keep_host_state_when_remote_plan_logic_changes() {
+    let source = "component App\n  state count = 0\n  action step\n    count = count + 1\n  view\n    column\n      text \"remote v1\"\n      button press=step testId=\"step\"\n        text `${count}`\n";
+    let baked = contract::compile(source).unwrap().encode();
+    let candidate = contract::compile(
+        &source
+            .replace("remote v1", "remote v2")
+            .replace("count + 1", "count + 2"),
+    )
+    .unwrap()
+    .encode();
+    let dir = std::env::temp_dir().join(format!(
+        "exact-independent-presenters-{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let client = checked(&dir, &baked, &candidate, &[], true);
+    let boot = || {
+        let (p, error) =
+            exact_linux::Presenter::boot(&baked, Named, (390.0, 844.0), 1.0, dir.clone()).unwrap();
+        assert!(error.is_none(), "{error:?}");
+        p
+    };
+    let mut host = boot();
+    let mut remote = boot();
+    let step = |p: &mut exact_linux::Presenter<Named>| {
+        let k = p.host().kernel();
+        let id = k.node_by_key(k.find_by_test_id("step")[0]).unwrap().id;
+        p.tap(id).unwrap();
+    };
+    step(&mut host);
+    step(&mut host);
+    step(&mut remote);
+    assert_eq!(
+        remote.host().runner().slot("count"),
+        Some(&Value::Number(1.0))
+    );
+    let host_tree = host.host().agent(r#"{"op":"tree"}"#);
+    let host_now = host.host().now();
+    assert!(remote.set_delivery_from_compat(UPDATE_COMPAT).is_none());
+    remote.set_updates(Some(Box::new(Updates::from_client(client).unwrap())));
+    assert!(remote.activate_update(Named).unwrap());
+    assert!(remote
+        .host()
+        .agent(r#"{"op":"tree"}"#)
+        .contains("remote v2"));
+    assert_eq!(
+        remote.host().runner().slot("count"),
+        Some(&Value::Number(1.0))
+    );
+    step(&mut remote);
+    assert_eq!(
+        remote.host().runner().slot("count"),
+        Some(&Value::Number(3.0))
+    );
+    assert_eq!(
+        host.host().runner().slot("count"),
+        Some(&Value::Number(2.0))
+    );
+    assert_eq!(host.host().agent(r#"{"op":"tree"}"#), host_tree);
+    assert_eq!(host.host().now(), host_now);
+    assert_eq!(remote.host().runner().delivery().seq, 1);
+    assert_eq!(host.host().runner().delivery().seq, 0);
+    step(&mut host);
+    assert_eq!(
+        host.host().runner().slot("count"),
+        Some(&Value::Number(3.0))
+    );
+    drop((host, remote));
+    std::fs::remove_dir_all(dir).unwrap();
+}
