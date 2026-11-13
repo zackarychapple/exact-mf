@@ -98,6 +98,7 @@ final class GenerationAcceptanceTests: XCTestCase {
         let a = host.makeSession(label: "host"), b = remote.makeSession(label: "remote")
         defer { a.destroy(); b.destroy() }
         for session in [a, b] {
+            session.presenter.viewport.frame = CGRect(x: 0, y: 0, width: 200, height: 400)
             session.clock = 0
             XCTAssertNil(session.boot(plan: plan, size: CGSize(width: 200, height: 400)).error)
         }
