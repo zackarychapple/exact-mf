@@ -1,0 +1,9 @@
+target/
+node_modules/
+.exact/
+public-v*/
+resources/*.hbc
+resources/*.bin
+resources/origin.txt
+*.log
+native/.stamp.json

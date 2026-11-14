@@ -1,0 +1,14 @@
+component App
+  view
+    column padding=28 gap=20 background-color="#fff1df" flex=1
+      text "THE OPEN HOUSE" font-size=13 color="#9c461a"
+      h1 "Good things start here." font-size=38 color="#623015"
+      text "Pull up a chair. There is a new story to tell." font-size=20 color="#9c461a"
+      row gap=12
+        column flex=1 padding=16 gap=10 background-color="#ffd6aa"
+          h2 "Explore" color="#623015"
+          text "New paths. Small discoveries. A different view." color="#623015"
+        column flex=1 padding=16 gap=10 background-color="#ffe3c4"
+          h2 "Connect" color="#623015"
+          text "Shared ideas make the best beginnings." color="#623015"
+      text "A NEW CHAPTER / COME ON IN" font-size=12 color="#9c461a"

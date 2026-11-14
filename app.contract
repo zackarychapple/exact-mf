@@ -1,0 +1,5 @@
+component App
+  view
+    column padding=28 gap=16
+      h2 "Connecting to the collection"
+      text "Waiting for a verified remote release." color="-exact-secondary-label"

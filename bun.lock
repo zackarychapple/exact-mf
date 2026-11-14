@@ -1,0 +1,20 @@
+{
+  "lockfileVersion": 2,
+  "configVersion": 1,
+  "workspaces": {
+    "": {
+      "dependencies": {
+        "@module-federation/error-codes": "2.9.3",
+        "@module-federation/runtime-core": "2.9.3",
+        "@module-federation/sdk": "2.9.3",
+      },
+    },
+  },
+  "packages": {
+    "@module-federation/error-codes": ["@module-federation/error-codes@2.9.3", "", {}, "sha512-sXWo6XHOFKC1Dcu9DcSA1okZjtIz2y3uM+NJrAoSpeZ9QSPXielkMWT5PtG7MqGE3OQ+/HDawiLK53IOi3NHcQ=="],
+
+    "@module-federation/runtime-core": ["@module-federation/runtime-core@2.9.3", "", { "dependencies": { "@module-federation/error-codes": "2.9.3", "@module-federation/sdk": "2.9.3" } }, "sha512-E6AjfIWFgZOEATxf+GzBIg54Ejp7QFNTxtVzwnnhEEu01dErBo7qLjJvEPXGiN5sJTNf2a4HIW/wZTM23skouQ=="],
+
+    "@module-federation/sdk": ["@module-federation/sdk@2.9.3", "", {}, "sha512-cT5ko/JDzGrKe8N+MFPgwb07G8fzmpnZbKZjGjXvT9phagQpiOfV6WQZhu1j+HtO152Frv1vjv/1Hhg2wMUL8g=="],
+  }
+}

@@ -1,0 +1,10 @@
+component App
+  view
+    column padding=28 gap=22 background-color="#e8f1ff" flex=1
+      text "THE BLUE EDITION" font-size=13 color="#224b86"
+      h1 "A fresh perspective." font-size=38 color="#102e58"
+      text "Welcome to a collection of ideas, places, and people worth discovering." font-size=19 color="#224b86"
+      column padding=20 gap=12 background-color="#ffffff"
+        h2 "Make room for curiosity" color="#102e58"
+        text "Every great journey begins with something unexpected. Take a moment. Find your next inspiration." color="#224b86"
+      text "FIELD NOTES / WELCOME" font-size=12 color="#224b86"

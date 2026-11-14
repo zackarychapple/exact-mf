@@ -1,0 +1,22 @@
+{
+  "$schema": "/Users/zackarychapple/code/t3/exact/scripts/app.schema.json",
+  "name": "Exact Live Remote",
+  "short_name": "Exact Mf Joined Sol App",
+  "id": "com.zephyr.exact.mf.recording.d20261114",
+  "start_url": "/",
+  "display": "standalone",
+  "app": {
+    "id": "com.zephyr.exact.mf.recording.d20261114",
+    "name": "Exact Live Remote"
+  },
+  "host": {
+    "ios": {
+      "sources": "swift/Sources/ExactHostIOS"
+    }
+  },
+  "deploy": {
+    "store": {
+      "web": "0"
+    }
+  }
+}
