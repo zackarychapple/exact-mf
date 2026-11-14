@@ -83,8 +83,8 @@ pub use native_storage::{NativeStorage, SqliteFile};
 pub use paired::{Bytecode, Paired};
 mod remote;
 pub use remote::{
-    PreparedRemote, RemoteCheckRequest, RemoteCoordinator, RemoteDownloadedCheck, RemoteHandle,
-    RemotePreparation,
+    PreparedRemote, RemoteBootAttempt, RemoteCheckRequest, RemoteCoordinator,
+    RemoteDownloadedCheck, RemoteHandle, RemotePreparation,
 };
 #[doc(hidden)]
 pub use storage::CompressionHold;

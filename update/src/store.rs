@@ -720,8 +720,11 @@ impl Store {
         if self.frozen || self.running.is_none() {
             return Ok(());
         }
-        self.record.failures += 1;
-        self.write_boot_mark()
+        let mut record = self.record.clone();
+        record.failures += 1;
+        self.write_boot_mark(&record)?;
+        self.record = record;
+        Ok(())
     }
 
     /// First pixel: the bundle that booted is good. Clears the
@@ -731,9 +734,12 @@ impl Store {
         if self.frozen || *generation != self.generation() {
             return Ok(());
         }
-        self.record.failures = 0;
-        self.record.last_good.clone_from(&self.running);
-        self.write_boot_mark()
+        let mut record = self.record.clone();
+        record.failures = 0;
+        record.last_good.clone_from(&self.running);
+        self.write_boot_mark(&record)?;
+        self.record = record;
+        Ok(())
     }
 
     /// The selected entry was refused before it could run and this process
@@ -1260,11 +1266,11 @@ impl Store {
     /// crash keeps the write (the page cache has it); a power loss that loses
     /// the record loses only the mark, since `open` recovers the floor from
     /// the signed entries and the accepted head stages again.
-    fn write_boot_mark(&self) -> Result<(), String> {
+    fn write_boot_mark(&self, record: &Record) -> Result<(), String> {
         if self.frozen {
             return Ok(());
         }
-        write_atomic(&self.record_path(), self.record.to_json().as_bytes(), false)
+        write_atomic(&self.record_path(), record.to_json().as_bytes(), false)
     }
 
     /// Build one entry under a temporary name and rename it into place. Whole

@@ -122,6 +122,25 @@ impl RemoteCheckRequest {
     }
 }
 
+/// An owner-bound attempt to boot the generation selected when Store opened.
+/// It grants no authority over a staged update or another execution incarnation.
+pub struct RemoteBootAttempt {
+    generation: std::rc::Rc<Generation>,
+}
+
+impl RemoteBootAttempt {
+    /// The complete immutable generation this attempt can recover or bless.
+    pub fn generation(&self) -> &Generation {
+        &self.generation
+    }
+}
+
+struct SelectedBoot {
+    generation: std::rc::Rc<Generation>,
+    selection: Option<exact_update::PreparedSelection>,
+    execution: Option<RemoteHandle>,
+}
+
 struct Candidate {
     handle: RemoteHandle,
     remote: PreparedRemote,
@@ -139,6 +158,7 @@ pub struct RemoteCoordinator {
     pending: Option<Candidate>,
     active: Option<Candidate>,
     revoked: Vec<Generation>,
+    selected_boot: Option<SelectedBoot>,
 }
 
 impl RemoteCoordinator {
@@ -151,6 +171,7 @@ impl RemoteCoordinator {
             pending: None,
             active: None,
             revoked: Vec::new(),
+            selected_boot: None,
         }
     }
 
@@ -193,6 +214,139 @@ impl RemoteCoordinator {
         self.store.finish_download(downloaded.downloaded)
     }
 
+    /// Record a selected boot before reading its plan or creating an executor.
+    /// A write refusal returns no attempt. Boot marks survive process exit, not necessarily power loss.
+    /// Entry zero needs no attempt. A staged update is never selected by this operation.
+    pub fn begin_selected_boot(&mut self) -> Result<Option<RemoteBootAttempt>, String> {
+        if self.selected_boot.is_some() || self.pending.is_some() || self.active.is_some() {
+            return Err("remote boot or execution is already present".into());
+        }
+        let generation = self.store.generation();
+        if generation.entry.is_none() {
+            return Ok(None);
+        }
+        if self.revoked.contains(&generation) {
+            return Err("remote generation is revoked".into());
+        }
+        self.store.boot_started()?;
+        let generation = std::rc::Rc::new(generation);
+        self.selected_boot = Some(SelectedBoot {
+            generation: generation.clone(),
+            selection: None,
+            execution: None,
+        });
+        Ok(Some(RemoteBootAttempt { generation }))
+    }
+
+    fn validate_boot(&self, attempt: &RemoteBootAttempt) -> Result<(), String> {
+        let boot = self
+            .selected_boot
+            .as_ref()
+            .ok_or("stale selected boot attempt")?;
+        if !std::rc::Rc::ptr_eq(&boot.generation, &attempt.generation) {
+            return Err("foreign or stale selected boot attempt".into());
+        }
+        if *boot.generation != self.store.generation() {
+            return Err("selected boot generation changed".into());
+        }
+        Ok(())
+    }
+
+    /// Revalidate and pin this attempt's selected plan, ignoring newer staged updates.
+    /// Corrupt selected bytes use Store's integrity refusal, not its execution failure counter.
+    pub fn prepare_selected_boot(
+        &mut self,
+        attempt: &RemoteBootAttempt,
+    ) -> Result<exact_update::PreparedSelection, String> {
+        self.validate_boot(attempt)?;
+        if let Some(selection) = &self.selected_boot.as_ref().unwrap().selection {
+            return Ok(selection.clone());
+        }
+        let selection = match self.store.prepare_selected() {
+            Ok(Some(selection)) => selection,
+            Ok(None) => return Err("selected boot has no stored generation".into()),
+            Err(refusal) => {
+                self.dispose_selected_boot();
+                return Err(refusal.to_string());
+            }
+        };
+        if selection.generation != *attempt.generation {
+            return Err("selected boot generation changed".into());
+        }
+        self.selected_boot.as_mut().unwrap().selection = Some(selection.clone());
+        Ok(selection)
+    }
+
+    /// Prepare selected HBC without executing it. Activate it only after first pixel.
+    /// An authenticated asset read failure refuses the selected generation as corrupt.
+    /// Policy and execution failures leave the attempt available for explicit recovery.
+    pub fn prepare_selected_remote(
+        &mut self,
+        attempt: &RemoteBootAttempt,
+        asset: &str,
+        app_id: &str,
+        grants: &str,
+        plan: &exact_plan::Plan,
+    ) -> Result<RemotePreparation, String> {
+        self.validate_boot(attempt)?;
+        if self.selected_boot.as_ref().unwrap().execution.is_some() {
+            return Err("selected boot already has an execution".into());
+        }
+        let selection = self.prepare_selected_boot(attempt)?;
+        if let Err(reason) = selection.assets.resolve(asset) {
+            let refusal = self.refuse_selected_boot(attempt, reason)?;
+            return Err(refusal.to_string());
+        }
+        let token = self.prepare_selection(selection, false, asset, app_id, grants, plan)?;
+        self.selected_boot.as_mut().unwrap().execution = Some(token.handle.clone());
+        Ok(token)
+    }
+
+    /// Recover from valid selected bytes that fail plan preparation, execution, or routing.
+    /// Preserve the recorded failure and durable selection for Store's next-open demotion policy.
+    /// The current process falls back to entry zero. No staged update becomes selected.
+    pub fn fail_selected_boot(&mut self, attempt: &RemoteBootAttempt) -> Result<(), String> {
+        self.validate_boot(attempt)?;
+        self.dispose_selected_boot();
+        self.store.entry_refused();
+        Ok(())
+    }
+
+    /// Recover after a selected asset resolver proves authenticated bytes corrupt.
+    /// Store clears that generation's selected, pending, last-good, and boot-count roles.
+    /// Its accepted sequence floor remains unchanged.
+    pub fn refuse_selected_boot(
+        &mut self,
+        attempt: &RemoteBootAttempt,
+        reason: impl Into<String>,
+    ) -> Result<exact_update::SelectionRefusal, String> {
+        self.validate_boot(attempt)?;
+        let generation = (*attempt.generation).clone();
+        self.dispose_selected_boot();
+        Ok(self.store.refuse_prepared(&generation, reason))
+    }
+
+    fn dispose_selected_boot(&mut self) {
+        let Some(boot) = self.selected_boot.take() else {
+            return;
+        };
+        let Some(handle) = boot.execution else { return };
+        if self
+            .pending
+            .as_ref()
+            .is_some_and(|c| std::rc::Rc::ptr_eq(&c.handle.0, &handle.0))
+        {
+            self.pending.take();
+        }
+        if self
+            .active
+            .as_ref()
+            .is_some_and(|c| std::rc::Rc::ptr_eq(&c.handle.0, &handle.0))
+        {
+            self.active.take();
+        }
+    }
+
     /// Pin Store bytes and host-selected execution policy without running code.
     /// `expected` must be the complete generation resolved by the host, never an alias.
     pub fn prepare(
@@ -203,6 +357,9 @@ impl RemoteCoordinator {
         grants: &str,
         plan: &exact_plan::Plan,
     ) -> Result<RemotePreparation, String> {
+        if self.selected_boot.is_some() {
+            return Err("selected boot recovery is pending".into());
+        }
         if self.pending.is_some() {
             return Err("remote preparation is pending".into());
         }
@@ -223,6 +380,18 @@ impl RemoteCoordinator {
         if &selection.generation != expected || selection.assets.generation() != expected {
             return Err("remote generation differs from requested generation".into());
         }
+        self.prepare_selection(selection, staged, asset, app_id, grants, plan)
+    }
+
+    fn prepare_selection(
+        &mut self,
+        selection: exact_update::PreparedSelection,
+        staged: bool,
+        asset: &str,
+        app_id: &str,
+        grants: &str,
+        plan: &exact_plan::Plan,
+    ) -> Result<RemotePreparation, String> {
         let mut remote = PreparedRemote::new(&selection.assets, asset, app_id, grants)?;
         remote.bind(plan)?;
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -317,6 +486,14 @@ impl RemoteCoordinator {
     /// Count a boot only for the committed execution that the presenter accepted.
     pub fn boot_started(&mut self, handle: &RemoteHandle) -> Result<(), String> {
         self.active_generation(handle)?;
+        if self
+            .selected_boot
+            .as_ref()
+            .and_then(|b| b.execution.as_ref())
+            .is_some_and(|h| std::rc::Rc::ptr_eq(&h.0, &handle.0))
+        {
+            return Ok(());
+        }
         self.store.boot_started()
     }
 
@@ -324,7 +501,16 @@ impl RemoteCoordinator {
     /// Pending, foreign, and replaced handles cannot bless a selected generation.
     pub fn boot_succeeded(&mut self, handle: &RemoteHandle) -> Result<(), String> {
         let generation = self.active_generation(handle)?;
-        self.store.boot_succeeded(&generation)
+        self.store.boot_succeeded(&generation)?;
+        if self
+            .selected_boot
+            .as_ref()
+            .and_then(|b| b.execution.as_ref())
+            .is_some_and(|h| std::rc::Rc::ptr_eq(&h.0, &handle.0))
+        {
+            self.selected_boot = None;
+        }
+        Ok(())
     }
 
     fn active_generation(&self, handle: &RemoteHandle) -> Result<Generation, String> {
@@ -354,6 +540,14 @@ impl RemoteCoordinator {
     /// Revoke every execution incarnation of this complete generation.
     /// Revocation lasts only for this coordinator. Reopening Store does not restore it.
     pub fn revoke(&mut self, generation: &Generation) {
+        if self
+            .selected_boot
+            .as_ref()
+            .is_some_and(|b| b.generation.as_ref() == generation)
+        {
+            self.dispose_selected_boot();
+            self.store.entry_refused();
+        }
         if !self.revoked.contains(generation) {
             self.revoked.push(generation.clone());
         }
@@ -529,6 +723,8 @@ mod tests {
             previous = Some(handle);
         }
     }
+
+    include!("remote_boot_tests.rs");
 
     #[test]
     fn concurrent_downloads_can_finish_in_sequence() {
