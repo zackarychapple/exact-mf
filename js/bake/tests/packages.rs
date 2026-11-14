@@ -587,3 +587,73 @@ for (const source of ['/abs/other.js', './unrecorded', 'pkg'])
         String::from_utf8_lossy(&checked.stderr)
     );
 }
+
+/// Installs the exact upstream release. Run explicitly when changing the specialization.
+#[test]
+#[ignore = "installs pinned upstream packages from the registry"]
+fn native_federation_runs_upstream_init_get_and_factory() {
+    let app = App::new("native-mf");
+    app.put("package.json", r#"{"private":true,"dependencies":{"@module-federation/runtime-core":"2.9.3","@module-federation/sdk":"2.9.3","@module-federation/error-codes":"2.9.3"}}"#);
+    let install = exact_bake::bun()
+        .arg("install")
+        .current_dir(&app.0)
+        .output()
+        .unwrap();
+    assert!(
+        install.status.success(),
+        "{}",
+        String::from_utf8_lossy(&install.stderr)
+    );
+    app.put("entry.mjs", r#"
+import {ModuleFederation} from '@module-federation/runtime-core';
+const calls=[];
+const host=new ModuleFederation({name:'exact-test',remotes:[],plugins:[{
+ name:'prepared',async loadEntry(){return {
+ async init(){calls.push('init');}, async get(id){calls.push('get:'+id);return ()=>{calls.push('factory');return {value:'upstream'};};}
+ };}
+}]});
+globalThis.mfMessage=async ()=>{host.registerRemotes([{name:'remote',entry:'prepared'}]);
+ const result=await host.loadRemote('remote/value');return result.value+':'+calls.join(',');};
+"#);
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let built = exact_bake::bun().args(["-e", r#"
+import assert from 'node:assert/strict';
+import {readFileSync,writeFileSync} from 'node:fs';
+import {build} from 'rolldown';
+import {parseSync} from 'rolldown/utils';
+const [root,app]=process.argv.slice(1);
+const {buildNativeFederation,nativeFederation}=await import(root+'/js/bake/src/native_federation.mjs');
+const {packageRefusals}=await import(root+'/js/bake/src/typescript.mjs');
+const input=app+'/entry.mjs',file=app+'/mf.js';
+await buildNativeFederation({input,file});
+const first=readFileSync(file,'utf8');
+await buildNativeFederation({input,file});
+assert.equal(readFileSync(file,'utf8'),first);
+const stock=await build({input,platform:'browser',transform:{define:{ENV_TARGET:'"native"','process.env.NODE_ENV':'"production"'}},output:{format:'iife',codeSplitting:false}});
+assert.ok(packageRefusals(stock.output[0].code,x=>x,(s,o)=>parseSync('stock.js',s,o)).length>0);
+const id=app+'/node_modules/@module-federation/sdk/dist/dom.js';
+assert.throws(()=>nativeFederation().transform(readFileSync(id,'utf8')+'\n',id),/unsupported native federation input/);
+const manifest=app+'/node_modules/@module-federation/sdk/package.json';
+const original=readFileSync(manifest,'utf8');
+try {writeFileSync(manifest,original.replace('"2.9.3"','"2.9.4"'));
+ assert.throws(()=>nativeFederation().transform(readFileSync(id,'utf8'),id),/unsupported native federation version/);
+} finally {writeFileSync(manifest,original);}
+"#]).arg(root.canonicalize().unwrap()).arg(&app.0).current_dir(&root).output().unwrap();
+    assert!(
+        built.status.success(),
+        "{}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    app.answer(
+        "import './mf.js';\ndeclare global { var mfMessage: () => Promise<string>; }",
+        "globalThis.mfMessage()",
+    );
+    if exact_js::ENGINE_LINKED {
+        assert_eq!(
+            message(&app),
+            Value::str("upstream:init,get:./value,factory")
+        );
+    } else {
+        panic!("native MF qualification requires the linked Hermes executor");
+    }
+}
