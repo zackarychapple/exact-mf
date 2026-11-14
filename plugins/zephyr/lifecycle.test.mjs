@@ -4,6 +4,7 @@ import { canonicalBytes } from '../../scripts/deploy-signing.mjs';
 import { sha256 } from '../../scripts/origin.mjs';
 import { collectSnapshot } from './snapshot.mjs';
 import { publishSnapshot } from './index.mjs';
+import { publishRoot } from '../../scripts/deploy.mjs';
 
 function fixture() {
   const { privateKey, publicKey } = generateKeyPairSync('ed25519');
@@ -97,4 +98,52 @@ test('verified immutable snapshot permits explicit promotion', async () => {
     fetchFile: async url => uploaded.get(new URL(url).pathname.slice(1)),
   });
   expect(promoted).toBe(true);
+});
+
+test('an application cannot overwrite the transport marker', async () => {
+  const f = fixture(), path = '.exact/root/web/exact.json';
+  const root = JSON.parse(f.files.get(path)), bytes = Buffer.from('application content');
+  const name = 'exact-zephyr-upload-id.txt';
+  root.files.push({ name, bytes: bytes.length, sha256: sha256(bytes), sourceSha256: sha256(bytes) });
+  f.files.set(path, Buffer.from(JSON.stringify(root)));
+  f.files.set(`.exact/root/web/releases/${root.id}/${name}`, bytes);
+  let calls = 0;
+  await expect(publishSnapshot({ ...f, upload: () => { calls++; } })).rejects.toThrow('reserved');
+  expect(calls).toBe(0);
+  expect(f.files.get(`.exact/root/web/releases/${root.id}/${name}`)).toEqual(bytes);
+});
+
+test('interrupted publication does not prevent export or discard completed generations', async () => {
+  const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { resolve } = await import('node:path');
+  const { DirectoryOrigin } = await import('../../scripts/origin.mjs');
+  const dir = mkdtempSync(resolve(tmpdir(), 'exact-zephyr-interrupted-'));
+  try {
+    const origin = new DirectoryOrigin(resolve(dir, 'origin')), web = resolve(dir, 'web');
+    mkdirSync(web);
+    writeFileSync(resolve(web, 'index.html'), '<h1>First</h1>');
+    const first = await publishRoot({ origin, row: {}, web });
+    writeFileSync(resolve(web, 'index.html'), '<h1>Incomplete</h1>');
+    writeFileSync(resolve(web, 'z.js'), 'console.log("incomplete")');
+    const put = origin.put.bind(origin);
+    origin.put = async (path, ...args) => {
+      if (path.endsWith('/z.js')) throw new Error('injected payload write refusal');
+      return put(path, ...args);
+    };
+    await expect(publishRoot({ origin, row: {}, web })).rejects.toThrow('injected');
+    const before = await collectSnapshot(origin, {});
+    expect(before.get('index.html').toString()).toContain('First');
+    expect([...before.keys()].some(path => path.endsWith('/z.js'))).toBe(false);
+    origin.put = put;
+    writeFileSync(resolve(web, 'index.html'), '<h1>Third</h1>');
+    await publishRoot({ origin, row: {}, web });
+    // A new native publisher can create its lock before it publishes a head.
+    mkdirSync(resolve(origin.dir, '.exact/prod/pending'), { recursive: true });
+    writeFileSync(resolve(origin.dir, '.exact/prod/pending/.lock'), '');
+    const after = await collectSnapshot(origin, {});
+    expect(after.get('index.html').toString()).toContain('Third');
+    expect(after.get(`.exact/root/web/releases/${first.root}/index.html`)).toEqual(before.get('index.html'));
+    expect([...after.keys()].some(path => path.includes('/pending/'))).toBe(false);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });

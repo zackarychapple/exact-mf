@@ -49,7 +49,6 @@ import { BESIDE, STAGE } from '../host/web/beside.mjs';
 const ROOT = resolve(new URL('..', import.meta.url).pathname);
 const PLATFORMS = ['web', 'ios', 'macos', 'linux'];
 const USAGE = 'usage: bun scripts/deploy.mjs <app> [--origin <dir|url>] [--channel <name>] [--only bundle|origin] [--platform <web|ios|macos|linux>]... [--snapshot <sha>] [--dirty] [--release <id>] [--keys <dir>] [--export <new-directory>] [--transport <module>] [--json] [--yes]\n       bun scripts/deploy.mjs keygen <id> [--keys <dir>] [--json]';
-// ------------------------------------------------------------------ arguments
 function parseArgs(argv) {
   const opts = { platform: [], _: [] };
   const valued = new Set(['--origin', '--channel', '--only', '--platform', '--snapshot', '--release', '--keys', '--export', '--transport']);
@@ -1091,7 +1090,6 @@ export function renderTable(table) {
   return out.join('\n');
 }
 
-// ---------------------------------------------------------------- publishing
 
 /** Publish one stream: under its lock, refuse a
  * reused immutable receipt, read the head and allocate seq, put and verify
@@ -1245,14 +1243,16 @@ export function webRelease(web) {
 export async function publishRoot({ origin, row, web, log = () => {} }) {
   const { pointer, files } = webRelease(web);
   return origin.withLock(webRootStream, async () => {
-    await origin.put(`.exact/root/web/inventories/${pointer.id}.json`, canonicalBytes(pointer), { immutable: true });
     const before = await origin.get(webRootPath);
     if (before && parseWebRoot(before).id === pointer.id) {
       const complete = await Promise.all(pointer.files.map(async (card) => {
         const have = await origin.get(`${webReleasePath(pointer.id)}/${card.name}`);
         return have && sha256(have) === card.sha256 && have.length === card.bytes;
       }));
-      if (complete.every(Boolean)) return { ...row, action: 'current', root: pointer.id };
+      if (complete.every(Boolean)) {
+        await origin.put(`.exact/root/web/inventories/${pointer.id}.json`, canonicalBytes(pointer), { immutable: true });
+        return { ...row, action: 'current', root: pointer.id };
+      }
     }
     for (const file of files) {
       const path = `${webReleasePath(pointer.id)}/${file.name}`;
@@ -1261,6 +1261,7 @@ export async function publishRoot({ origin, row, web, log = () => {} }) {
       if (!have?.equals(file.body)) refuse(`web release readback failed: ${path}`);
     }
     const bytes = canonicalBytes(pointer);
+    await origin.put(`.exact/root/web/inventories/${pointer.id}.json`, bytes, { immutable: true });
     try { await origin.putHead(webRootStream, bytes, { previousDigest: before ? sha256(before) : null }); }
     catch (error) {
       // A transport failure after commit is success only when exact readback
@@ -1272,7 +1273,6 @@ export async function publishRoot({ origin, row, web, log = () => {} }) {
   });
 }
 
-// -------------------------------------------------------------------- deploy
 
 async function deployCaptured(opts, capsule) {
   if (capsule?.version !== 1 || typeof capsule.run !== 'string'

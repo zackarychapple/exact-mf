@@ -29,9 +29,12 @@ export async function collectSnapshot(origin, app) {
     }
   }
   const root = parseWebRoot(await add(webRootPath));
-  for (const id of await origin.list('.exact/root/web/releases', { includeHidden: true }) ?? []) {
-    if (!/^[a-f0-9]{64}$/.test(id)) throw new Error('unsafe web release');
-    const inventoryPath = `.exact/root/web/inventories/${id}.json`;
+  // Inventories become visible only after every immutable payload is verified.
+  // An interrupted publication can leave a release directory without an inventory.
+  for (const name of await origin.list('.exact/root/web/inventories', { includeHidden: true }) ?? []) {
+    if (!/^[a-f0-9]{64}\.json$/.test(name)) throw new Error('unsafe web inventory');
+    const id = name.slice(0, -5);
+    const inventoryPath = `.exact/root/web/inventories/${name}`;
     const inventory = parseWebRoot(await add(inventoryPath));
     if (inventory.id !== id) throw new Error('web inventory identity mismatch');
     for (const card of inventory.files) {
@@ -50,6 +53,7 @@ export async function collectSnapshot(origin, app) {
     for (const compatibilityId of await origin.list(`.exact/${channel}`, { includeHidden: true }) ?? []) {
       const stream = { channel, compatibilityId };
       const base = `.exact/${channel}/${compatibilityId}`;
+      if (await origin.get(`${base}/exact.json`) === null) continue;
       await envelope(await add(`${base}/exact.json`), stream);
       for (const name of await origin.list(`${base}/releases`, { includeHidden: true }) ?? []) {
         if (!/^[A-Za-z0-9][A-Za-z0-9._-]*\.json$/.test(name)) throw new Error('unsafe release name');

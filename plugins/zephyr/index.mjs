@@ -15,6 +15,7 @@ export async function publishSnapshot({ origin, app, site, control, dryRun = fal
     return Buffer.from(await response.arrayBuffer());
   } }) {
   const files = await collectSnapshot(origin, app);
+  if (files.has('exact-zephyr-upload-id.txt')) throw new Error('The app uses the reserved Zephyr upload marker path');
   if (dryRun) return { dryRun: true, files: files.size };
   if (process.env.ZE_ENV || process.env.ZE_SECRET_TOKEN) throw new Error('Unset ZE_ENV and ZE_SECRET_TOKEN before snapshot upload');
   for (const key of ['org', 'project', 'app']) if (!/^[a-z0-9][a-z0-9-]*$/.test(site[key] ?? '')) throw new Error(`invalid site ${key}`);

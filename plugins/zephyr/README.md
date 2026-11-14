@@ -46,5 +46,6 @@ Published CLI 1.4.1 has no structured deploy receipt. `resolveBuild` must inspec
 Do not choose the newest build without checking this marker. Verification checks the marker again with every other file.
 
 Web publication now retains `.exact/root/web/inventories/<id>.json` for each generation.
-Export refuses a retained web generation without its inventory. Use a fresh retained origin for this lifecycle.
+The publisher writes this inventory after it verifies every payload. Export includes these completed generations and skips partial directories.
+Use a fresh retained origin for this lifecycle.
 Existing proof artifacts remain unchanged.
