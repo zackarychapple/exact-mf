@@ -3,7 +3,13 @@ import { generateKeyPairSync, sign } from 'node:crypto';
 import { canonicalBytes } from '../../scripts/deploy-signing.mjs';
 import { sha256 } from '../../scripts/origin.mjs';
 import { collectSnapshot } from './snapshot.mjs';
-import { publishSnapshot } from './index.mjs';
+import { publishSnapshot, parseCliVersionUrl } from './index.mjs';
+
+test('the published CLI logger prefixes both the completion message and version URL', () => {
+  const output = "\u001b[36m ZEPHYR \u001b[0m  Deployed to Zephyr's edge in 1851ms.\n ZEPHYR   https://immutable.example/\n";
+  expect(parseCliVersionUrl(output)).toBe('https://immutable.example/');
+  expect(() => parseCliVersionUrl(output + output.replace('immutable.example', 'another.example'))).toThrow('unambiguous');
+});
 import { publishRoot } from '../../scripts/deploy.mjs';
 
 function fixture() {

@@ -70,7 +70,7 @@ export async function publishSnapshot({ origin, app, site, control, dryRun = fal
 }
 
 export function parseCliVersionUrl(output) {
-  const plain = output.replace(/\x1b\[[0-9;]*m/g, '');
+  const plain = output.replace(/\x1b\[[0-9;]*m/g, '').replace(/^[\t ]*ZEPHYR[\t ]+/gm, '');
   const urls = [...new Set([...plain.matchAll(/Deployed to Zephyr's edge in \d+ms\.\s*(https:\/\/[^\s]+)/g)].map(match => match[1]))];
   if (urls.length !== 1) throw new Error('CLI returned no unambiguous immutable version URL');
   return urls[0];
