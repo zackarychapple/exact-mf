@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync, renameSync, rmSync, lstatSync } from 'node:fs';
+import { mkdirSync, writeFileSync, renameSync, rmSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { DirectoryOrigin, sha256, safeRelative, parseWebRoot, webRootPath, webReleasePath } from '../../scripts/origin.mjs';
 import { inspectHead } from '../../scripts/deploy.mjs';
@@ -29,18 +29,13 @@ export async function collectSnapshot(origin, app) {
   const root = parseWebRoot(await add(webRootPath));
   for (const id of await origin.list('.exact/root/web/releases', { includeHidden: true }) ?? []) {
     if (!/^[a-f0-9]{64}$/.test(id)) throw new Error('unsafe web release');
-    // Retain complete previous web generations, using their published metadata.
-    const prefix = webReleasePath(id);
-    async function walk(path) {
-      for (const name of await origin.list(path, { includeHidden: true }) ?? []) {
-        const child = `${path}/${name}`;
-        const stat = lstatSync(origin.path(child));
-        if (stat.isDirectory()) await walk(child);
-        else if (stat.isFile() && !stat.isSymbolicLink()) { publicName(child.slice(prefix.length + 1)); await add(child); }
-        else throw new Error(`unsafe public output: ${child}`);
-      }
+    const inventoryPath = `.exact/root/web/inventories/${id}.json`;
+    const inventory = parseWebRoot(await add(inventoryPath));
+    if (inventory.id !== id) throw new Error('web inventory identity mismatch');
+    for (const card of inventory.files) {
+      publicName(card.name);
+      await add(`${webReleasePath(id)}/${card.name}`, card);
     }
-    await walk(prefix);
   }
   for (const card of root.files) {
     const bytes = await add(`${webReleasePath(root.id)}/${card.name}`, card);

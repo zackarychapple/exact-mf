@@ -1257,6 +1257,7 @@ export function webRelease(web) {
 export async function publishRoot({ origin, row, web, log = () => {} }) {
   const { pointer, files } = webRelease(web);
   return origin.withLock(webRootStream, async () => {
+    await origin.put(`.exact/root/web/inventories/${pointer.id}.json`, canonicalBytes(pointer), { immutable: true });
     const before = await origin.get(webRootPath);
     if (before && parseWebRoot(before).id === pointer.id) {
       const complete = await Promise.all(pointer.files.map(async (card) => {

@@ -23,6 +23,7 @@ function fixture() {
   const html = Buffer.from('<h1>Exact</h1>'), id = 'a'.repeat(64);
   files.set('.exact/root/web/exact.json', Buffer.from(JSON.stringify({ webRoot: 1, id, files: [{ name: 'index.html', sha256: sha256(html), sourceSha256: sha256(html), bytes: html.length }] })));
   files.set(`.exact/root/web/releases/${id}/index.html`, html);
+  files.set(`.exact/root/web/inventories/${id}.json`, files.get('.exact/root/web/exact.json')); 
   const origin = { get: async path => files.get(path) ?? null, list: async path => path === '.exact' ? ['root', 'blobs', 'prod'] : path === '.exact/prod' ? ['cohort'] : path.endsWith('/releases') && path.includes('/cohort/') ? ['v1.json', 'v2.json'] : [] };
   return { app, origin, files, old, current };
 }
