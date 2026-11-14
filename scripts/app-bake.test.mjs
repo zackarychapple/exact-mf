@@ -800,13 +800,17 @@ test('rewriting an input with its own bytes does not make a web build stale', as
 
 // A drive's check compares every receipt input's bytes with its digest, so a file replaced with
 // other bytes of the same length, its mtime put back (`cp -p`, `rsync -a`), is still found.
-test('a receipt input is found changed by its bytes, whatever its size and mtime', () => {
+test('a Swift receipt detects source additions, removals and byte edits regardless of size and mtime', () => {
   const dir = mkdtempSync(resolve(tmpdir(), 'exact-pending-'));
   try {
     const path = resolve(dir, 'a.swift');
     writeFileSync(path, 'let a = 1\n');
-    const at = statSync(path), build = { binary: { inputs: [{ name: 'a.swift', path, sha256: createHash('sha256').update('let a = 1\n').digest('hex') }], missing: [], directories: [] } };
+    const at = statSync(path), build = { binary: { inputs: [{ name: 'a.swift', path, sha256: createHash('sha256').update('let a = 1\n').digest('hex') }], missing: [], directories: [{path:dir,names:['a.swift']}] } };
     assert.deepEqual(pendingBuildInputs(build), []);
+    const added = resolve(dir, 'b.swift'); writeFileSync(added, 'let extra = 3');
+    assert.deepEqual(pendingBuildInputs(build), [dir]); rmSync(added);
+    assert.deepEqual(pendingBuildInputs(build), []);
+    rmSync(path); assert.deepEqual(pendingBuildInputs(build), ['a.swift', dir]); writeFileSync(path, 'let a = 1\n');
     writeFileSync(path, 'let b = 2\n');
     utimesSync(path, at.atime, at.mtime);
     assert.deepEqual(pendingBuildInputs(build), ['a.swift']);

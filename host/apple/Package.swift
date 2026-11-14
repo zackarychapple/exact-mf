@@ -87,12 +87,19 @@ let core: [Target] = [
             swiftSettings: capabilities.map { .define($0.define) }),
 ]
 
+func entry(_ name: String) -> String {
+    let env = ProcessInfo.processInfo.environment
+    let platform = env["EXACT_APPLE_PLATFORM"] == "ios" ? "IOS" : "Mac"
+    let product = (env["EXACT_APPLE_HOST"] == "1" ? "ExactHost" : "Exact") + platform
+    return name == product ? env["EXACT_APPLE_SOURCES"] ?? "Sources/" + name : "Sources/" + name
+}
+
 let executables: [Target] = [
     .executableTarget(name: "ExactWatch", dependencies: ["ExactCore", "ExactSnapshot"], path: "Sources/ExactWatch", swiftSettings: devTools),
-    .executableTarget(name: "ExactMac", dependencies: ["ExactKit", "ExactComposition", "ExactLaunchParts"], path: "Sources/ExactMac"),
-    .executableTarget(name: "ExactIOS", dependencies: ["ExactKit", "ExactComposition", "ExactLaunchParts"], path: "Sources/ExactIOS"),
-    .executableTarget(name: "ExactHostMac", dependencies: ["ExactKit", "ExactComposition"], path: "Sources/ExactHostMac"),
-    .executableTarget(name: "ExactHostIOS", dependencies: ["ExactKit", "ExactComposition"], path: "Sources/ExactHostIOS"),
+    .executableTarget(name: "ExactMac", dependencies: ["ExactKit", "ExactComposition", "ExactLaunchParts"], path: entry("ExactMac")),
+    .executableTarget(name: "ExactIOS", dependencies: ["ExactKit", "ExactComposition", "ExactLaunchParts"], path: entry("ExactIOS")),
+    .executableTarget(name: "ExactHostMac", dependencies: ["ExactKit", "ExactComposition"], path: entry("ExactHostMac")),
+    .executableTarget(name: "ExactHostIOS", dependencies: ["ExactKit", "ExactComposition"], path: entry("ExactHostIOS")),
 ]
 
 // Host behaviour no other check can see: a wheel event's routing, asserted

@@ -6,7 +6,7 @@ import { spawnSync } from 'node:child_process';
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { delimiter, resolve, toNamespacedPath } from 'node:path';
-import { HERMES_INSTALLER, hermesBundle, hermesLeanSysRoots } from './app.mjs';
+import { appleHostSources, HERMES_INSTALLER, hermesBundle, hermesLeanSysRoots } from './app.mjs';
 import { checkHermesBundles, hermesCrossTargets, hermesSetupTargets } from './exact.mjs';
 import { iosAssets, entitlements, infoPlist, macInfoPlist, documentTypes, importedTypes, exportedTypes, writeUsageStrings, designCompatible, COMPATIBLE_SDK, moduleTripleFor } from '../host/apple/build.mjs';
 import { useXcode } from '../host/apple/devices.mjs';
@@ -944,3 +944,23 @@ test('only an opted-in iOS browser signs the managed role and registers the web 
   assert.throws(() => profile('PHONE', app.id, browserEntitlements(app), { installed: [missing], named: null }), /browser-device-profile:.*Request Apple's managed default-browser approval/);
   assert.throws(() => profile('PHONE', app.id, browserEntitlements(app), { installed: [], named: missing }), /EXACT_PROFILE.*does not allow/);
 });
+
+test.skipIf(process.platform !== 'darwin')('app-owned Swift entries select one executable and retain checkout dependencies', () => {
+  const dir = realpathSync(mkdtempSync(resolve(tmpdir(), 'exact-owned-swift-'))); let sourceLink;
+  try {
+    mkdirSync(resolve(dir, 'swift')); writeFileSync(resolve(dir, 'swift/Entry.swift'), '@main struct Entry { static func main() {} }');
+    assert.deepEqual(appleHostSources({dir, manifest:{}}, 'macos'), {});
+    for (const platform of ['macos', 'ios']) for (const host of ['0', '1']) {
+      const env = appleHostSources({dir, manifest:{host:{[platform]:{sources:'swift'}}}}, platform);
+      sourceLink = resolve(import.meta.dir, '../host/apple', env.EXACT_APPLE_SOURCES);
+      const result = spawnSync('swift', ['package', '--package-path', 'host/apple', '--scratch-path', resolve(dir, 'build'), 'describe', '--type', 'json'], {encoding:'utf8', env:{...process.env, ...env, EXACT_APPLE_HOST:host}});
+      assert.equal(result.status, 0, result.stderr);
+      const targets = JSON.parse(result.stdout).targets, name = (host === '1' ? 'ExactHost' : 'Exact') + (platform === 'ios' ? 'IOS' : 'Mac');
+      const selected = targets.find(t => t.name === name);
+      assert.equal(selected.path, env.EXACT_APPLE_SOURCES); assert.deepEqual(selected.sources, ['Entry.swift']);
+      assert.ok(selected.target_dependencies.includes('ExactKit'));
+      for (const other of ['ExactMac','ExactIOS','ExactHostMac','ExactHostIOS'].filter(t => t !== name)) assert.equal(targets.find(t => t.name === other).path, `Sources/${other}`);
+      assert.equal(targets.find(t => t.name === 'ExactKit').path, 'Sources/ExactKit');
+    }
+  } finally { if (sourceLink) rmSync(sourceLink, {force:true}); rmSync(dir, {recursive:true, force:true}); }
+}, 60000);

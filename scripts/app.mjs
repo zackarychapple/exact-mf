@@ -3,24 +3,11 @@ export { compilerPaths, unitDepInfo } from './cargo-dep-info.mjs';
 import { LIBRARY_CACHE, directDependencies, prepareLibrary } from './package-libraries.mjs';
 import { ensureBun } from './bun.mjs';
 import { macResourceMappings, macResourceInventory, appleAssetCatalogInventory, launchImageInventory } from '../host/apple/assets.mjs';
-// Where an app lives. Inside this repo an app is `apps/<name>` — its crates
-// normally belong to the root workspace and build into `target/`; an explicit
-// package.workspace uses that workspace's lock and target. Outside it (weird-castle:
-// its own repo or a member of a surrounding workspace, depending on our crates by
-// path so the two iterate together), `EXACT_APP_DIR` names the directory and
-// everything else follows from it: the workspace cargo runs in, the target
-// directory the artifacts land in, `app.contract`, `assets/`, `gpu/`. Every
-// script that builds, serves, or drives an app resolves it here, so nothing
-// else knows the difference.
-//   bun host/web/build.mjs weird-castle-web          (EXACT_APP_DIR set)
-// The app manifest: `app.json` beside
-// `app.contract` — the W3C Web App Manifest's own keys, which the web host
-// copies out as `manifest.json`, plus `app` (identity: the id every platform
-// derives its bundle id from, the name, the origin), `host.<platform>` (what
-// bake generates each platform's host files from), and `deploy` (policy,
-// never identity). Validated here against `scripts/app.schema.json` with a
-// validator small enough to live beside the reader; an app without one gets
-// the derived defaults it had before the manifest existed.
+// Resolve app crates, sources and outputs here for every builder and driver.
+// Repository apps use apps/<name>. EXACT_APP_DIR selects an external app.
+// An explicit package.workspace selects its workspace lock and target directory.
+// app.json combines Web App Manifest fields with app identity, native host
+// settings and deployment policy. scripts/app.schema.json validates these fields.
 import { spawnSync } from 'node:child_process';
 import { closeSync, existsSync, mkdirSync, openSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { basename, delimiter, dirname, isAbsolute, relative, resolve, sep, toNamespacedPath } from 'node:path';
@@ -713,6 +700,14 @@ export function webAppManifest(manifest, name, notes = []) {
   web.lang ??= 'en';
   return web;
 }
+export function appleHostSources(app, platform) {
+  const source = app.manifest.host?.[platform]?.sources; if (source == null) return {};
+  const path = resolve(app.dir, source); if (isAbsolute(source) || !under(app.dir, path) || !under(realpathSync(app.dir), realpathSync(path)) || !statSync(path).isDirectory()) throw new Error(`host.${platform}.sources must name an app-owned directory`);
+  // SwiftPM requires target paths inside its package. Link the app sources without copying them.
+  const slot = `.build/app-host-${buildHash(path).slice(0,16)}`, link = resolve(ROOT, 'host/apple', slot); mkdirSync(dirname(link), {recursive:true});
+  try { symlinkSync(path, link, 'dir'); } catch (error) { if (error.code !== 'EEXIST') throw error; } if (realpathSync(link) !== realpathSync(path)) throw new Error('custom Apple host source link differs');
+  return {EXACT_APPLE_SOURCES:slot, EXACT_APPLE_PLATFORM:platform};
+}
 export function nativeManifestMetadata(manifest, platform) { return {app:manifest.app,host:manifest.host?.[platform]??{},icons:manifest.icons??[],...(manifest.frame_health ? {frame_health:manifest.frame_health} : {}),...(['macos','ios'].includes(platform) && manifest.protocol_handlers?.length ? {protocol_handlers:manifest.protocol_handlers} : {}),...(['ios','android'].includes(platform) && manifest.orientation ? {orientation:manifest.orientation} : {})}; }
 let cachedSchema = null;
 function schema() {
@@ -1117,10 +1112,11 @@ function completeBuild(app, platform, target, graph, messages, roots, env, prepa
   }
   if (platform === 'macos' || platform === 'ios') {
     const packageRoot=resolve(ROOT,'host/apple');
-    const swiftEnv = {...env, EXACT_APP_COMPOSITION: compat.inputs.store.L === '0' ? 'embedded' : 'updating'}; delete swiftEnv.SDKROOT;
+    const custom = appleHostSources(app, platform); if (custom.EXACT_APPLE_SOURCES) { add(resolve(app.dir, app.manifest.host[platform].sources)); add(resolve(app.dir, 'app.json')); }
+    const swiftEnv = {...env, EXACT_APPLE_SOURCES:undefined, EXACT_APPLE_PLATFORM:undefined, ...custom, EXACT_APPLE_HOST:env.EXACT_APPLE_HOST??'0', EXACT_APP_COMPOSITION: compat.inputs.store.L === '0' ? 'embedded' : 'updating'}; delete swiftEnv.SDKROOT;
     // Cache SwiftPM's description by manifest, composition and source inventory.
     const tree=(dir)=>readdirSync(dir,{withFileTypes:true}).flatMap((e)=>e.isDirectory()?tree(resolve(dir,e.name)):[resolve(dir,e.name)]).sort();
-    const described=resolve(app.target,'apple-swift',`package-${buildHash(canonicalBuild([readFileSync(resolve(packageRoot,'Package.swift'),'utf8'),swiftEnv.EXACT_APP_COMPOSITION,swiftEnv.EXACT_TESTS??null,swiftEnv.EXACT_WIDGET_GALLERY??null,tree(resolve(packageRoot,'Sources')).map((f)=>relative(packageRoot,f))])).slice(0,16)}.json`);
+    const described=resolve(app.target,'apple-swift',`package-${buildHash(canonicalBuild([readFileSync(resolve(packageRoot,'Package.swift'),'utf8'),swiftEnv.EXACT_APP_COMPOSITION,swiftEnv.EXACT_TESTS??null,swiftEnv.EXACT_WIDGET_GALLERY??null,custom,custom.EXACT_APPLE_SOURCES ? tree(resolve(packageRoot, custom.EXACT_APPLE_SOURCES)) : [],swiftEnv.EXACT_APPLE_HOST,tree(resolve(packageRoot,'Sources')).map((f)=>relative(packageRoot,f))])).slice(0,16)}.json`);
     if(!existsSync(described)) {
       mkdirSync(dirname(described),{recursive:true});
       writeFileSync(`${described}.${process.pid}.tmp`,buildCommand('swift',['package','--package-path',packageRoot,'describe','--type','json'],app,swiftEnv).stdout);
@@ -1129,8 +1125,9 @@ function completeBuild(app, platform, target, graph, messages, roots, env, prepa
       for(const old of kept.slice(6))rmSync(old,{force:true});
     }
     const swift=JSON.parse(readFileSync(described,'utf8'));
-    const pending=[platform==='ios'?'ExactIOS':'ExactMac'],seen=new Set();
+    const pending=[platform==='ios'?'ExactIOS':'ExactMac', ...(env.EXACT_APPLE_HOST === '1' ? [platform==='ios'?'ExactHostIOS':'ExactHostMac'] : [])],seen=new Set();
     while(pending.length) { const name=pending.pop();if(seen.has(name))continue;seen.add(name);const unit=swift.targets.find((t)=>t.name===name);if(!unit)throw new Error(`Swift package has no ${name}`);
+      if(custom.EXACT_APPLE_SOURCES)add(resolve(packageRoot,unit.path));
       for(const file of unit.sources??[])add(resolve(packageRoot,unit.path,file));
       for(const resource of unit.resources??[])add(resolve(packageRoot,resource.path));
       if(unit.type==='system-target')add(resolve(packageRoot,unit.path));pending.push(...(unit.target_dependencies??[]));

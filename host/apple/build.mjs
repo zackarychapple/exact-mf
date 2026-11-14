@@ -46,7 +46,7 @@ import { closeSync, copyFileSync, cpSync, existsSync, linkSync, mkdirSync, mkdte
 import { evictArms, keepRoster, keptRoster, snapshotSources } from './arms.mjs';
 import { HOST_MACOS } from '../../scripts/filesystem.mjs';
 import { documentTypes, exportedTypes, importedTypes, openingLinks, webPageTypes, browserEntitlements } from './documents.mjs';
-import { executableName, HOST_DEV, checkModuleRoster, copyShaders, appleCargoClaims, awaitBuildOutput, cargoLibraryTarget, claimBuildOutput, appSourceKey, bakeOutput, buildBake, contractLast, bakeTarget, developmentBuildEnv, developmentURLScheme, gpuModules, hermesBundle, injectedProfiles, resolveApp, verifyBakeFiles } from '../../scripts/app.mjs';
+import { appleHostSources, executableName, HOST_DEV, checkModuleRoster, copyShaders, appleCargoClaims, awaitBuildOutput, cargoLibraryTarget, claimBuildOutput, appSourceKey, bakeOutput, buildBake, contractLast, bakeTarget, developmentBuildEnv, developmentURLScheme, gpuModules, hermesBundle, injectedProfiles, resolveApp, verifyBakeFiles } from '../../scripts/app.mjs';
 import { copyStaticTreeIfPresent, listAssets } from '../web/serve.mjs';
 import { startSweep } from '../../scripts/sweep.mjs';
 import { guardFlags } from '../../scripts/help.mjs';
@@ -711,7 +711,7 @@ async function main(args, lockHeld = false) {
   // when Xcode's Metal toolchain is installed.
   const svgFilterBuilt = ios ? svgFilterLibrary(sdkName, targets.ios, resolve(webBuildDir, svgFilterLibraryName)) : null;
   const cargoEnv = {
-    ...developmentBuildEnv(),
+    ...developmentBuildEnv(), EXACT_APPLE_SOURCES: undefined, EXACT_APPLE_PLATFORM: undefined, ...appleHostSources(app, ios ? 'ios' : 'macos'), EXACT_APPLE_HOST: args.includes('--host') ? '1' : '0',
     EXACT_WIDGET_GALLERY: gallery ? '1' : '0',
     SDKROOT: sdk,
     // An iOS build's Mac side is its build scripts and proc macros: the host's target, as every cargo call's.
@@ -800,7 +800,7 @@ async function main(args, lockHeld = false) {
   // SwiftPM compiles Package.swift itself for macOS before applying the iOS product triple; an iPhone
   // SDKROOT in its environment breaks that host manifest compile. The target SDK stays in the explicit Swift arguments.
   const launchPartsDir = writeLaunchParts(pkg, app), swiftEnv = (libDir, composition, link = 'all') => ({
-    ...process.env, ...(launchPartsDir ? { EXACT_LAUNCH_PARTS: launchPartsDir.slice(pkg.length + 1) } : {}),
+    ...process.env, EXACT_APPLE_SOURCES: undefined, EXACT_APPLE_PLATFORM: undefined, ...appleHostSources(app, ios ? 'ios' : 'macos'), EXACT_APPLE_HOST: args.includes('--host') ? '1' : '0', ...(launchPartsDir ? { EXACT_LAUNCH_PARTS: launchPartsDir.slice(pkg.length + 1) } : {}),
     EXACT_WIDGET_GALLERY: gallery ? '1' : '0',
     EXACT_APPLE_LINK: link, EXACT_UPDATE_TRUST: cargoEnv.EXACT_UPDATE_TRUST ?? 'development', // link.mjs; a production build compiles no inspect mode (Package.swift)
     ...(tv ? { TVOS_DEPLOYMENT_TARGET: targets.ios } : ios ? { IPHONEOS_DEPLOYMENT_TARGET: targets.ios } : { MACOSX_DEPLOYMENT_TARGET: targets.macos }),
