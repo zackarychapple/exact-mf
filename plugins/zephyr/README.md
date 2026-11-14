@@ -43,3 +43,7 @@ Keep this module and its account configuration outside the exported directory.
 
 Published CLI 1.4.1 has no structured deploy receipt. `resolveBuild` must inspect candidate immutable builds for `receipt.uploadId`.
 Do not choose the newest build without checking this marker. Verification checks the marker again with every other file.
+
+Web publication now retains `.exact/root/web/inventories/<id>.json` for each generation.
+Export refuses a retained web generation without its inventory. Use a fresh retained origin for this lifecycle.
+Existing proof artifacts remain unchanged.

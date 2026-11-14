@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync, renameSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync, renameSync, rmSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { DirectoryOrigin, sha256, safeRelative, parseWebRoot, webRootPath, webReleasePath } from '../../scripts/origin.mjs';
 import { inspectHead } from '../../scripts/deploy.mjs';
@@ -62,10 +62,10 @@ export async function collectSnapshot(origin, app) {
 export async function exportSnapshot(origin, app, destination) {
   if (!(origin instanceof DirectoryOrigin)) throw new Error('snapshot export requires a retained directory origin');
   const files = await collectSnapshot(origin, app);
-  const output = resolve(destination), staging = `${output}.pending-${process.pid}`;
+  const output = resolve(destination);
+  mkdirSync(output); // Reserve a new destination. Never overwrite a previous snapshot.
+  const staging = mkdtempSync(`${output}.pending-`);
   try {
-    mkdirSync(output); // Reserve a new destination. Never overwrite a previous snapshot.
-    mkdirSync(staging);
     for (const [path, bytes] of files) {
       const target = resolve(staging, safeRelative(path));
       mkdirSync(dirname(target), { recursive: true });
