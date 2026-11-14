@@ -94,6 +94,34 @@ pub struct RemotePreparation {
     handle: RemoteHandle,
 }
 
+/// Owned download inputs. Only this value and its result may cross to a network worker.
+pub struct RemoteCheckRequest {
+    owner: std::sync::Arc<()>,
+    generation: Generation,
+    request: exact_update::client::CheckRequest,
+}
+
+/// A single-use download result. It contains no executor objects.
+pub struct RemoteDownloadedCheck {
+    owner: std::sync::Arc<()>,
+    generation: Generation,
+    downloaded: exact_update::client::DownloadedCheck,
+}
+
+impl RemoteCheckRequest {
+    /// Fetch verified bytes without access to the coordinator or its executor.
+    pub fn fetch(
+        self,
+        fetch: &mut dyn FnMut(&str) -> Result<Vec<u8>, String>,
+    ) -> RemoteDownloadedCheck {
+        RemoteDownloadedCheck {
+            owner: self.owner,
+            generation: self.generation,
+            downloaded: self.request.fetch(fetch),
+        }
+    }
+}
+
 struct Candidate {
     handle: RemoteHandle,
     remote: PreparedRemote,
@@ -107,6 +135,7 @@ struct Candidate {
 /// Each successful commit replaces and disposes the previous execution, including the same generation.
 pub struct RemoteCoordinator {
     store: exact_update::Store,
+    download_owner: std::sync::Arc<()>,
     pending: Option<Candidate>,
     active: Option<Candidate>,
     revoked: Vec<Generation>,
@@ -118,6 +147,7 @@ impl RemoteCoordinator {
         store.hold_staged(true);
         Self {
             store,
+            download_owner: std::sync::Arc::new(()),
             pending: None,
             active: None,
             revoked: Vec::new(),
@@ -137,6 +167,30 @@ impl RemoteCoordinator {
         embedded: &mut dyn FnMut(&str) -> Option<String>,
     ) -> Result<exact_update::Check, String> {
         self.store.check(url, fetch, embedded)
+    }
+
+    /// Create owned worker inputs using the existing Store download protocol.
+    pub fn begin_check(&self, url: &str, assets_root: &std::path::Path) -> RemoteCheckRequest {
+        RemoteCheckRequest {
+            owner: self.download_owner.clone(),
+            generation: self.store.generation(),
+            request: self.store.begin_check(url, assets_root),
+        }
+    }
+
+    /// Accept a result only for this owner and the complete generation that requested it.
+    /// Store then revalidates signatures, digests, and the live anti-rollback floor.
+    pub fn finish_check(
+        &mut self,
+        downloaded: RemoteDownloadedCheck,
+    ) -> Result<exact_update::Check, String> {
+        if !std::sync::Arc::ptr_eq(&self.download_owner, &downloaded.owner) {
+            return Err("foreign remote download".into());
+        }
+        if self.store.generation() != downloaded.generation {
+            return Err("stale remote download generation".into());
+        }
+        self.store.finish_download(downloaded.downloaded)
     }
 
     /// Pin Store bytes and host-selected execution policy without running code.
@@ -375,7 +429,7 @@ mod tests {
         }
     }
 
-    fn stage(owner: &mut RemoteCoordinator, seq: u64) -> PreparedSelection {
+    fn download(owner: &RemoteCoordinator, seq: u64) -> RemoteDownloadedCheck {
         let plan = include_bytes!("../../update/tests/it/fixtures/publisher/app.plan");
         let marker = seq.to_string().into_bytes();
         let head = serde_json::to_vec(&serde_json::json!({
@@ -389,23 +443,108 @@ mod tests {
             ]
         }))
         .unwrap();
-        let outcome = owner.check(
-            "https://remote.test/exact.json",
-            &mut |url| match url {
+        owner
+            .begin_check(
+                "https://remote.test/exact.json",
+                std::path::Path::new("/nonexistent"),
+            )
+            .fetch(&mut |url| match url {
                 "https://remote.test/exact.json" => Ok(head.clone()),
                 "https://remote.test/app.plan" => Ok(plan.to_vec()),
                 "https://remote.test/remote.hbc" => Ok(BYTECODE.to_vec()),
                 "https://remote.test/version.txt" => Ok(marker.clone()),
                 _ => Err(format!("unexpected URL: {url}")),
-            },
-            &mut |_| None,
-        );
+            })
+    }
+
+    fn stage(owner: &mut RemoteCoordinator, seq: u64) -> PreparedSelection {
+        let result = download(owner, seq);
+        let outcome = owner.finish_check(result);
         assert!(matches!(outcome, Ok(Check::Staged { seq: found, .. }) if found == seq));
         owner.store().prepare_activation().unwrap().unwrap()
     }
 
     fn source_plan() -> exact_plan::Plan {
         contract::compile("component App\n  resource base64 = base64() as shape string\n  view\n    text base64\n").unwrap()
+    }
+
+    #[test]
+    fn downloads_revalidate_live_floor_and_generation_without_blocking_queries() {
+        let dir = Directory::new();
+        let mut owner = RemoteCoordinator::new(dir.store());
+        let first = stage(&mut owner, 1);
+        let plan = source_plan();
+        let token = owner
+            .prepare(&first.generation, "remote.hbc", "test.pure", "", &plan)
+            .unwrap();
+        let active = owner.activate_after_first_pixel(&token).unwrap();
+        owner.commit(&token).unwrap();
+
+        let request = owner.begin_check(
+            "https://remote.test/exact.json",
+            std::path::Path::new("/nonexistent"),
+        );
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            request.fetch(&mut |_| {
+                entered_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+                Err("held fetch released".into())
+            })
+        });
+        entered_rx.recv().unwrap();
+        assert!(owner.query(&active, "base64", &[]).is_ok());
+        // The worker cannot complete until this owner explicitly releases the barrier.
+        assert!(!worker.is_finished());
+        release_tx.send(()).unwrap();
+        assert!(owner
+            .finish_check(worker.join().unwrap())
+            .unwrap_err()
+            .contains("held fetch"));
+
+        let older = download(&owner, 2);
+        let newer = download(&owner, 3);
+        assert!(matches!(
+            owner.finish_check(newer),
+            Ok(Check::Staged { seq: 3, .. })
+        ));
+        assert!(owner
+            .finish_check(older)
+            .unwrap_err()
+            .contains("below the accepted seq 3"));
+        let delayed = download(&owner, 3);
+        let selected = owner.store().prepare_activation().unwrap().unwrap();
+        let token = owner
+            .prepare(&selected.generation, "remote.hbc", "test.pure", "", &plan)
+            .unwrap();
+        let abandoned = owner.activate_after_first_pixel(&token).unwrap();
+        owner.abandon(&token).unwrap();
+        assert!(owner.query(&abandoned, "base64", &[]).is_err());
+        let retry = owner
+            .prepare(&selected.generation, "remote.hbc", "test.pure", "", &plan)
+            .unwrap();
+        let next = owner.activate_after_first_pixel(&retry).unwrap();
+        owner.commit(&retry).unwrap();
+        assert!(owner
+            .finish_check(delayed)
+            .unwrap_err()
+            .contains("stale remote download generation"));
+        assert!(owner.query(&active, "base64", &[]).is_err());
+        assert!(owner.query(&next, "base64", &[]).is_ok());
+
+        let other_dir = Directory::new();
+        let other = RemoteCoordinator::new(other_dir.store());
+        assert!(owner
+            .finish_check(download(&other, 4))
+            .unwrap_err()
+            .contains("foreign remote download"));
+        // Dropping a result abandons only that download. The same generation can be fetched again.
+        drop(download(&owner, 4));
+        assert!(matches!(
+            owner.finish_check(download(&owner, 4)),
+            Ok(Check::Staged { seq: 4, .. })
+        ));
     }
 
     #[test]

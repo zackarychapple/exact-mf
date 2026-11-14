@@ -119,6 +119,28 @@ impl CheckRequest {
     }
 }
 
+impl Store {
+    /// Snapshot download inputs without transferring live selection ownership.
+    pub fn begin_check(&self, head: &str, assets_root: &Path) -> CheckRequest {
+        CheckRequest {
+            store: self.check_snapshot(),
+            head: head.to_owned(),
+            assets_root: assets_root.to_path_buf(),
+            digests: HashMap::new(),
+        }
+    }
+
+    /// Revalidate downloaded bytes against the live admission and rollback state.
+    pub fn finish_download(&mut self, downloaded: DownloadedCheck) -> Result<Check, String> {
+        if downloaded.dir != self.dir() {
+            return Err("the update store changed during its check".into());
+        }
+        let envelope = downloaded.envelope?;
+        let mut embedded = |name: &str| downloaded.digests.get(name).cloned().flatten();
+        self.finish_check(envelope, &downloaded.head, &mut embedded)
+    }
+}
+
 impl Client {
     /// Open the store for the binary whose `compat.json` and plan bytes are
     /// given, under `base` — the platform's data directory — at
@@ -293,12 +315,9 @@ impl Client {
         let head = self.head_url.clone().ok_or_else(|| {
             "no origin: the manifest names none and EXACT_UPDATE_ORIGIN is unset".to_string()
         })?;
-        Ok(CheckRequest {
-            store: self.store.check_snapshot(),
-            head,
-            assets_root: self.assets_root.clone(),
-            digests: self.digests.clone(),
-        })
+        let mut request = self.store.begin_check(&head, &self.assets_root);
+        request.digests = self.digests.clone();
+        Ok(request)
     }
 
     /// Adopt a downloaded check under the host mutex. Only its result is
@@ -307,16 +326,8 @@ impl Client {
         if downloaded.dir != self.dir() || self.head_url.as_deref() != Some(&downloaded.head) {
             return Outcome::Refused("the update client changed during its check".into());
         }
-        self.digests.extend(downloaded.digests);
-        let envelope = match downloaded.envelope {
-            Ok(envelope) => envelope,
-            Err(why) => return Outcome::Refused(why),
-        };
-        let mut embedded = |name: &str| self.digests.get(name).cloned().flatten();
-        match self
-            .store
-            .finish_check(envelope, &downloaded.head, &mut embedded)
-        {
+        self.digests.extend(downloaded.digests.clone());
+        match self.store.finish_download(downloaded) {
             Ok(Check::Current { .. }) => Outcome::Current,
             Ok(Check::Staged { entry, seq, .. }) => Outcome::Staged { entry, seq },
             Err(why) => Outcome::Refused(why),
