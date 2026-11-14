@@ -82,7 +82,7 @@ pub use native::{json, Changed, Json, LaterHandler, NativeModule, NativeReply};
 pub use native_storage::{NativeStorage, SqliteFile};
 pub use paired::{Bytecode, Paired};
 mod remote;
-pub use remote::PreparedRemote;
+pub use remote::{PreparedRemote, RemoteCoordinator, RemoteHandle, RemotePreparation};
 #[doc(hidden)]
 pub use storage::CompressionHold;
 
