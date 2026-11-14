@@ -21,7 +21,7 @@ Install pnpm and authenticate its normal Zephyr user first. Do not use MCP crede
 The caller implements these hooks through its supported authenticated Zephyr control plane:
 
 - `inspect(site)` returns `identityMatches`, `noAutomaticPromotion` and the observed environment `versionId` (null when absent).
-- `resolveBuild(site, receipt)` finds the exact uploaded build in history. It returns `applicationUid`, `versionUrl` and `versionId`.
+- `resolveBuild(site, receipt)` finds the exact uploaded build in history through its unique `exact-zephyr-upload-id.txt` marker. It returns `applicationUid`, `versionUrl` and `versionId`.
 - `promote(site, {versionId, expectedVersionId})` requests explicit promotion.
 
 `inspect` must check deployment rules and the CLI user before upload. Do not return constant approvals.
@@ -33,10 +33,13 @@ The caller must verify stable content after promotion. `dryRun: true` performs n
 Root's isolated live fixture uses org `zackarychapple`, project `exact-plugin-lifecycle`, app `signed-updates`, environment `exact-proof`.
 Its site ID is `2dee0599-4d8d-4e9a-b15d-27e1ff509850`.
 Use `site: {org: 'zackarychapple', project: 'exact-plugin-lifecycle', app: 'signed-updates', environment: 'exact-proof'}`.
-The CLI receipt must match this site's build history before promotion. Existing proof sites need no changes.
+The CLI upload marker and application identity must match this site's build history before promotion. Existing proof sites need no changes.
 
 To connect the normal deploy command, provide a local module through `--transport /absolute/zephyr-transport.mjs`.
 Its default function receives `{origin, app, snapshot}` after successful publication and export.
 The module calls `publishSnapshot({origin, app, site, control, promote: true})` with the control hooks above.
 Exact does not load the hook during a dry run or after a failed build or refused stream.
 Keep this module and its account configuration outside the exported directory.
+
+Published CLI 1.4.1 has no structured deploy receipt. `resolveBuild` must inspect candidate immutable builds for `receipt.uploadId`.
+Do not choose the newest build without checking this marker. Verification checks the marker again with every other file.

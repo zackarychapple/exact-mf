@@ -1,6 +1,7 @@
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { resolve, dirname } from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { sha256 } from '../../scripts/origin.mjs';
 import { collectSnapshot } from './snapshot.mjs';
@@ -19,9 +20,11 @@ export async function publishSnapshot({ origin, app, site, control, dryRun = fal
   for (const key of ['org', 'project', 'app']) if (!/^[a-z0-9][a-z0-9-]*$/.test(site[key] ?? '')) throw new Error(`invalid site ${key}`);
   const before = await control.inspect(site);
   if (!before.identityMatches || !before.noAutomaticPromotion) throw new Error('Upload requires matching user identity and no automatic deployment rules');
-  const result = await upload(files, site);
+  const uploadId = randomUUID();
+  files.set('exact-zephyr-upload-id.txt', Buffer.from(uploadId));
+  const result = await upload(files, site, uploadId);
   const build = await control.resolveBuild(site, result);
-  if (!build || build.applicationUid !== result.applicationUid || build.versionUrl !== result.versionUrl || !build.versionId) throw new Error('Uploaded build identity does not match build history');
+  if (!build || build.applicationUid !== result.applicationUid || result.versionUrl && build.versionUrl !== result.versionUrl || !build?.versionId) throw new Error('Uploaded build identity does not match build history');
   const base = new URL(build.versionUrl);
   if (base.protocol !== 'https:' || base.username || base.password) throw new Error('Expected an immutable HTTPS build URL');
   for (const [path, bytes] of files) {
@@ -36,7 +39,7 @@ export async function publishSnapshot({ origin, app, site, control, dryRun = fal
   return { ...build, verified: true, promotionRequested: promote };
 }
 
-export async function cliUpload(files, site) {
+export async function cliUpload(files, site, uploadId) {
   const stage = mkdtempSync(resolve(tmpdir(), 'exact-zephyr-'));
   try {
     mkdirSync(resolve(stage, 'dist'));
@@ -49,11 +52,11 @@ export async function cliUpload(files, site) {
     writeFileSync(resolve(stage, 'zephyr.config.mjs'), `export default ${JSON.stringify({ org: site.org, project: site.project, appName: site.app })};\n`);
     const env = { ...process.env, ZE_FAIL_BUILD: 'true' };
     delete env.ZE_ENV;
-    const result = spawnSync('pnpm', ['--package=zephyr-cli@1.4.1', 'dlx', 'ze-cli', 'deploy', './dist', '--target', 'web', '--format', 'json'], { cwd: stage, env, encoding: 'utf8', maxBuffer: 16 << 20 });
+    const result = spawnSync('pnpm', ['--package=zephyr-cli@1.4.1', 'dlx', 'ze-cli', 'deploy', './dist', '--target', 'web'], { cwd: stage, env, encoding: 'utf8', maxBuffer: 16 << 20 });
     if (result.status !== 0) throw new Error('Zephyr upload failed. Inspect build history before retrying.');
-    let receipt;
-    try { receipt = JSON.parse(result.stdout.trim()); } catch { throw new Error('Zephyr returned no unambiguous JSON receipt. Inspect build history before retrying.'); }
-    if (!receipt.applicationUid || !receipt.versionUrl || receipt.targetUrls?.length) throw new Error('Zephyr upload identity is missing or upload activated an environment. Inspect build history.');
-    return receipt;
+    // CLI 1.4.1 has no structured deploy receipt. Resolve history by the
+    // unique public marker, then verify every file at that immutable URL.
+    return { applicationUid: `${site.app}.${site.project}.${site.org}`, uploadId };
+
   } finally { rmSync(stage, { recursive: true, force: true }); }
 }
