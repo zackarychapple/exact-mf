@@ -110,6 +110,7 @@ pub(super) fn spawn(
     }
 }
 
+#[cfg(target_os = "macos")]
 pub(super) fn start_time(pid: i32) -> Option<u64> {
     // SAFETY: a zeroed proc_bsdinfo is valid, and proc_pidinfo writes at
     // most its size.
@@ -125,6 +126,12 @@ pub(super) fn start_time(pid: i32) -> Option<u64> {
         );
         (n == size).then(|| info.pbi_start_tvsec * 1_000_000 + info.pbi_start_tvusec)
     }
+}
+
+// libproc process metadata is available only on macOS.
+#[cfg(not(target_os = "macos"))]
+pub(super) fn start_time(_pid: i32) -> Option<u64> {
+    None
 }
 
 /// This boot's identity: `kern.bootsessionuuid`, which `kern.boottime`
@@ -154,6 +161,7 @@ pub(super) fn boot_id() -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
+#[cfg(target_os = "macos")]
 pub(super) fn group_members(pgid: i32) -> Vec<i32> {
     let mut pids = vec![0 as libc::pid_t; 4096];
     let bytes = (pids.len() * std::mem::size_of::<libc::pid_t>()) as libc::c_int;
@@ -167,4 +175,9 @@ pub(super) fn group_members(pgid: i32) -> Vec<i32> {
         pids.truncate(end);
     }
     pids.into_iter().filter(|p| *p > 0).collect()
+}
+
+#[cfg(not(target_os = "macos"))]
+pub(super) fn group_members(_pgid: i32) -> Vec<i32> {
+    Vec::new()
 }

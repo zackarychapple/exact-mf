@@ -1,5 +1,12 @@
 # Vendored Ibex split crates — Exact integration ledger
 
+## Apple process metadata
+
+`crates/ibex2/src/process/darwin.rs` restricts libproc calls to macOS.
+Other Apple targets return no process start time or group members.
+Their libc bindings do not expose these APIs. This permits iOS simulator builds
+without adding process inspection support.
+
 ## Windows WebSocket readiness
 
 `crates/ibex2/src/transport/websocket.rs` subscribes to writable readiness only
