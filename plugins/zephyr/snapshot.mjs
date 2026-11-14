@@ -15,6 +15,7 @@ export async function collectSnapshot(origin, app) {
     if (!/^[A-Za-z0-9._@/-]+$/.test(path)) throw new Error(`unsafe snapshot path: ${path}`);
     const bytes = await origin.get(path);
     if (!bytes || card && (sha256(bytes) !== card.sha256 || bytes.length !== card.bytes)) throw new Error(`snapshot integrity failure: ${path}`);
+    if (/-----BEGIN (?:[A-Z]+ )*PRIVATE KEY-----/.test(bytes.toString('utf8'))) throw new Error(`private key in snapshot output: ${path}`);
     files.set(path, bytes);
     return bytes;
   }
