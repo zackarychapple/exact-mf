@@ -6,7 +6,7 @@ import { requireReleasePins } from '../game/inputs.mjs';
 //
 //   bun scripts/deploy.mjs <app> [--origin <dir|url>] [--channel <name>]
 //       [--only bundle|origin] [--platform <p>]… [--snapshot <sha>] [--dirty]
-//       [--release <id>] [--keys <dir>] [--json] [--yes]
+//       [--release <id>] [--keys <dir>] [--export <new-directory>] [--json] [--yes]
 //   bun scripts/deploy.mjs keygen <id> [--keys <dir>] [--json]
 //
 // In order: **snapshot** — the app's tree must be committed
@@ -55,11 +55,11 @@ import { entryPlans, listBuildFiles, listPublicFiles, readStaticCandidate } from
 import { BESIDE, STAGE } from '../host/web/beside.mjs';
 const ROOT = resolve(new URL('..', import.meta.url).pathname);
 const PLATFORMS = ['web', 'ios', 'macos', 'linux'];
-const USAGE = 'usage: bun scripts/deploy.mjs <app> [--origin <dir|url>] [--channel <name>] [--only bundle|origin] [--platform <web|ios|macos|linux>]... [--snapshot <sha>] [--dirty] [--release <id>] [--keys <dir>] [--json] [--yes]\n       bun scripts/deploy.mjs keygen <id> [--keys <dir>] [--json]';
+const USAGE = 'usage: bun scripts/deploy.mjs <app> [--origin <dir|url>] [--channel <name>] [--only bundle|origin] [--platform <web|ios|macos|linux>]... [--snapshot <sha>] [--dirty] [--release <id>] [--keys <dir>] [--export <new-directory>] [--json] [--yes]\n       bun scripts/deploy.mjs keygen <id> [--keys <dir>] [--json]';
 // ------------------------------------------------------------------ arguments
 function parseArgs(argv) {
   const opts = { platform: [], _: [] };
-  const valued = new Set(['--origin', '--channel', '--only', '--platform', '--snapshot', '--release', '--keys']);
+  const valued = new Set(['--origin', '--channel', '--only', '--platform', '--snapshot', '--release', '--keys', '--export']);
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--json') opts.json = true;
@@ -77,6 +77,7 @@ function parseArgs(argv) {
   for (const p of opts.platform) if (!PLATFORMS.includes(p)) refuse(`--platform ${p}: one of ${PLATFORMS.join(', ')}`);
   if (opts.only && opts.only !== 'bundle' && opts.only !== 'origin') refuse(`--only ${opts.only}: bundle or origin`);
   if (opts.release && !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(opts.release)) refuse(`--release ${opts.release}: start with a letter or digit, then use letters, digits, . _ - only (it names a directory and a file)`);
+  if (opts.export) opts.export = resolve(opts.export);
   opts.keys = resolve(opts.keys ?? process.env.EXACT_SIGNING_KEY_DIR ?? resolve(homedir(), '.config/exact/keys'));
   return opts;
 }
@@ -1393,7 +1394,12 @@ async function deployCaptured(opts, capsule) {
       log(`  ${name}: failed — ${e.message}; ${e.headOutcomeUnknown ? 'the head outcome is unknown and must be inspected' : "this release's head is not visible"}`);
     }
   }
-  const outcome = { ...table, dryRun: false, published, refused, failed };
+  let exported;
+  if (opts.export && !failed.length && !refused.length) {
+    const { exportSnapshot } = await import('../plugins/zephyr/snapshot.mjs');
+    exported = await exportSnapshot(origin, app, opts.export);
+  }
+  const outcome = { ...table, dryRun: false, published, refused, failed, exported };
   if (opts.json) console.log(JSON.stringify(outcome));
   else {
     const heads = published.filter((p) => p.kind === 'stream' && p.action === 'published');
