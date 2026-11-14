@@ -314,6 +314,31 @@ impl RemoteCoordinator {
         Ok(handle)
     }
 
+    /// Count a boot only for the committed execution that the presenter accepted.
+    pub fn boot_started(&mut self, handle: &RemoteHandle) -> Result<(), String> {
+        self.active_generation(handle)?;
+        self.store.boot_started()
+    }
+
+    /// Record successful rendering only for the current committed execution.
+    /// Pending, foreign, and replaced handles cannot bless a selected generation.
+    pub fn boot_succeeded(&mut self, handle: &RemoteHandle) -> Result<(), String> {
+        let generation = self.active_generation(handle)?;
+        self.store.boot_succeeded(&generation)
+    }
+
+    fn active_generation(&self, handle: &RemoteHandle) -> Result<Generation, String> {
+        let active = self
+            .active
+            .as_ref()
+            .filter(|candidate| std::rc::Rc::ptr_eq(&candidate.handle.0, &handle.0))
+            .ok_or("stale or foreign remote handle")?;
+        if active.selection.generation != self.store.generation() {
+            return Err("stale remote generation".into());
+        }
+        Ok(active.selection.generation.clone())
+    }
+
     /// Dispose this candidate without changing selected UI or unrelated execution state.
     pub fn abandon(&mut self, token: &RemotePreparation) -> Result<(), String> {
         let candidate = self.pending.as_ref().ok_or("stale remote preparation")?;
@@ -466,6 +491,43 @@ mod tests {
 
     fn source_plan() -> exact_plan::Plan {
         contract::compile("component App\n  resource base64 = base64() as shape string\n  view\n    text base64\n").unwrap()
+    }
+
+    #[test]
+    fn boot_marks_require_the_current_committed_execution() {
+        let dir = Directory::new();
+        let mut owner = RemoteCoordinator::new(dir.store());
+        let plan = source_plan();
+        let record = || std::fs::read(dir.0.join("record.json")).unwrap();
+        let mut previous = None;
+        for seq in [1, 2] {
+            let selected = stage(&mut owner, seq);
+            let token = owner
+                .prepare(&selected.generation, "remote.hbc", "test.pure", "", &plan)
+                .unwrap();
+            let handle = owner.activate_after_first_pixel(&token).unwrap();
+            let before = record();
+            assert!(owner.boot_started(&handle).is_err());
+            assert!(owner.boot_succeeded(&handle).is_err());
+            assert_eq!(record(), before);
+            owner.commit(&token).unwrap();
+            if let Some(old) = previous {
+                let before = record();
+                assert!(owner.boot_started(&old).is_err());
+                assert!(owner.boot_succeeded(&old).is_err());
+                assert_eq!(record(), before);
+            }
+            let foreign = RemoteHandle(std::rc::Rc::new(handle.execution_id()));
+            assert!(owner.boot_succeeded(&foreign).is_err());
+            owner.boot_started(&handle).unwrap();
+            let started: serde_json::Value = serde_json::from_slice(&record()).unwrap();
+            assert_eq!(started["failures"], 1);
+            owner.boot_succeeded(&handle).unwrap();
+            let succeeded: serde_json::Value = serde_json::from_slice(&record()).unwrap();
+            assert_eq!(succeeded["failures"], 0);
+            assert_eq!(succeeded["lastGood"], selected.generation.entry.unwrap());
+            previous = Some(handle);
+        }
     }
 
     #[test]
