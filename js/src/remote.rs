@@ -97,6 +97,7 @@ pub struct RemotePreparation {
 /// Owned download inputs. Only this value and its result may cross to a network worker.
 pub struct RemoteCheckRequest {
     owner: std::sync::Arc<()>,
+    request_id: u64,
     generation: Generation,
     request: exact_update::client::CheckRequest,
 }
@@ -104,6 +105,7 @@ pub struct RemoteCheckRequest {
 /// A single-use download result. It contains no executor objects.
 pub struct RemoteDownloadedCheck {
     owner: std::sync::Arc<()>,
+    request_id: u64,
     generation: Generation,
     downloaded: exact_update::client::DownloadedCheck,
 }
@@ -116,6 +118,7 @@ impl RemoteCheckRequest {
     ) -> RemoteDownloadedCheck {
         RemoteDownloadedCheck {
             owner: self.owner,
+            request_id: self.request_id,
             generation: self.generation,
             downloaded: self.request.fetch(fetch),
         }
@@ -155,6 +158,7 @@ struct Candidate {
 pub struct RemoteCoordinator {
     store: exact_update::Store,
     download_owner: std::sync::Arc<()>,
+    request_id: std::cell::Cell<u64>,
     pending: Option<Candidate>,
     active: Option<Candidate>,
     revoked: Vec<Generation>,
@@ -168,6 +172,7 @@ impl RemoteCoordinator {
         Self {
             store,
             download_owner: std::sync::Arc::new(()),
+            request_id: std::cell::Cell::new(0),
             pending: None,
             active: None,
             revoked: Vec::new(),
@@ -192,7 +197,14 @@ impl RemoteCoordinator {
 
     /// Create owned worker inputs using the existing Store download protocol.
     pub fn begin_check(&self, url: &str, assets_root: &std::path::Path) -> RemoteCheckRequest {
+        self.request_id.set(
+            self.request_id
+                .get()
+                .checked_add(1)
+                .expect("remote request identity exhausted"),
+        );
         RemoteCheckRequest {
+            request_id: self.request_id.get(),
             owner: self.download_owner.clone(),
             generation: self.store.generation(),
             request: self.store.begin_check(url, assets_root),
@@ -208,7 +220,10 @@ impl RemoteCoordinator {
         if !std::sync::Arc::ptr_eq(&self.download_owner, &downloaded.owner) {
             return Err("foreign remote download".into());
         }
-        if self.store.generation() != downloaded.generation {
+        if (self.store.environment_head().is_some()
+            && self.request_id.get() != downloaded.request_id)
+            || self.store.generation() != downloaded.generation
+        {
             return Err("stale remote download generation".into());
         }
         self.store.finish_download(downloaded.downloaded)
@@ -646,6 +661,21 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn environment_downloads_reject_superseded_requests() {
+        let dir = Directory::new();
+        let mut store = dir.store();
+        store
+            .follow_environment("https://remote.test/exact.json")
+            .unwrap();
+        let mut owner = RemoteCoordinator::new(store);
+        let older = download(&owner, 1);
+        let newer = download(&owner, 2);
+        assert!(owner.finish_check(older).unwrap_err().contains("stale"));
+        assert!(owner.finish_check(newer).is_err());
+        assert!(owner.store().prepare_activation().unwrap().is_none());
     }
 
     fn download(owner: &RemoteCoordinator, seq: u64) -> RemoteDownloadedCheck {

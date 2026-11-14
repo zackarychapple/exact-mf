@@ -1356,3 +1356,75 @@ fn an_exclusive_owner_protects_signed_floors_and_live_downloads() {
     assert_eq!(reopened.select().seq, 5);
     assert!(temp.path().join("entries").join(entry).exists());
 }
+
+#[test]
+#[cfg_attr(windows, ignore = "Windows durable store is not qualified")]
+fn environment_selection_keeps_floor_and_sequence_identity_across_restarts() {
+    let temp = Temp::new("environment");
+    let key = SigningKey::from_bytes(&[71; 32]);
+    let mut baked = embedded(&[("test", key.verifying_key().to_bytes())]);
+    baked.trust = exact_update::Trust::Production;
+    let bundle = |seq, bytes: &[u8]| {
+        let mut b = Bundle::new(seq, bytes);
+        b.signer = Some(("test".into(), key.clone()));
+        b
+    };
+    let head = exact_update::head_url(ORIGIN, "release", COHORT);
+    let mut store = Store::open(temp.path(), baked.clone()).unwrap();
+    store.hold_staged(true);
+    store.follow_environment(&head).unwrap();
+    for seq in [5, 4, 5, 4] {
+        let b = bundle(seq, &[seq as u8]);
+        Origin::of(&b).check(&mut store).unwrap();
+        let prepared = store.prepare_activation().unwrap().unwrap();
+        let predecessor = store.generation();
+        assert_eq!(store.generation(), predecessor);
+        store.commit_activation(&prepared.generation).unwrap();
+        assert_eq!(store.generation().seq, seq);
+        drop(store);
+        store = Store::open(temp.path(), baked.clone()).unwrap();
+        assert_eq!(store.generation().seq, seq);
+        store.hold_staged(true);
+        store.follow_environment(&head).unwrap();
+    }
+    let record: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(temp.path().join("record.json")).unwrap()).unwrap();
+    assert_eq!(record["stream"]["seq"], 5);
+    assert!(Origin::of(&bundle(4, b"equivocation"))
+        .check(&mut store)
+        .is_err());
+    let before = store.generation();
+    Origin::of(&bundle(5, &[5])).check(&mut store).unwrap();
+    let candidate = store.prepare_activation().unwrap().unwrap();
+    let record_path = temp.path().join("record.json");
+    let saved = std::fs::read(&record_path).unwrap();
+    std::fs::remove_file(&record_path).unwrap();
+    std::fs::create_dir(&record_path).unwrap();
+    assert!(store.commit_activation(&candidate.generation).is_err());
+    assert_eq!(store.generation(), before);
+    assert!(Origin::of(&bundle(6, b"six")).check(&mut store).is_err());
+    assert_eq!(
+        store.prepare_activation().unwrap().unwrap().generation,
+        candidate.generation
+    );
+    std::fs::remove_dir(&record_path).unwrap();
+    std::fs::write(&record_path, saved).unwrap();
+    let plan = temp
+        .path()
+        .join("entries")
+        .join(candidate.generation.entry.as_ref().unwrap())
+        .join("app.plan");
+    std::fs::write(plan, b"broken").unwrap();
+    assert!(store.prepare_activation().is_err());
+    assert_eq!(store.generation(), before);
+    let mut corrupt = bundle(7, b"corrupt");
+    corrupt.tamper_plan = true;
+    assert!(Origin::of(&corrupt).check(&mut store).is_err());
+    assert_eq!(store.generation(), before);
+    let mut wrong_signature = bundle(6, b"signed");
+    wrong_signature.signer = Some(("test".into(), SigningKey::from_bytes(&[72; 32])));
+    assert!(Origin::of(&wrong_signature).check(&mut store).is_err());
+    drop(store);
+    let mut default = Store::open(temp.path(), baked).unwrap();
+    assert!(Origin::of(&bundle(4, &[4])).check(&mut default).is_err());
+}
