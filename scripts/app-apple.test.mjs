@@ -3,7 +3,8 @@
 import { test } from 'bun:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { delimiter, resolve, toNamespacedPath } from 'node:path';
 import { appleHostSources, HERMES_INSTALLER, hermesBundle, hermesLeanSysRoots } from './app.mjs';
@@ -964,3 +965,22 @@ test.skipIf(process.platform !== 'darwin')('app-owned Swift entries select one e
     }
   } finally { if (sourceLink) rmSync(sourceLink, {force:true}); rmSync(dir, {recursive:true, force:true}); }
 }, 60000);
+
+test.skipIf(process.platform === 'win32')('app-owned Swift sources reject nested links before creating a package link', () => {
+  const dir = realpathSync(mkdtempSync(resolve(tmpdir(), 'exact-swift-containment-')));
+  const outside = realpathSync(mkdtempSync(resolve(tmpdir(), 'exact-swift-outside-')));
+  const source = resolve(dir, 'swift'), nested = resolve(source, 'nested');
+  mkdirSync(nested, {recursive:true});
+  writeFileSync(resolve(outside, 'Entry.swift'), '@main struct Entry { static func main() {} }');
+  const packageLink = resolve(import.meta.dir, '../host/apple/.build', `app-host-${createHash('sha256').update(source).digest('hex').slice(0,16)}`);
+  const app = {dir, manifest:{host:{macos:{sources:'swift'}}}};
+  try {
+    for (const [name, target] of [['External.swift', resolve(outside, 'Entry.swift')], ['external', outside], ['cycle', source]]) {
+      const link = resolve(nested, name);
+      symlinkSync(target, link);
+      assert.throws(() => appleHostSources(app, 'macos'), /must not contain symlinks/);
+      assert.equal(existsSync(packageLink), false);
+      rmSync(link);
+    }
+  } finally { rmSync(dir, {recursive:true, force:true}); rmSync(outside, {recursive:true, force:true}); }
+});

@@ -703,6 +703,11 @@ export function webAppManifest(manifest, name, notes = []) {
 export function appleHostSources(app, platform) {
   const source = app.manifest.host?.[platform]?.sources; if (source == null) return {};
   const path = resolve(app.dir, source); if (isAbsolute(source) || !under(app.dir, path) || !under(realpathSync(app.dir), realpathSync(path)) || !statSync(path).isDirectory()) throw new Error(`host.${platform}.sources must name an app-owned directory`);
+  const check = dir => { for (const entry of readdirSync(dir, {withFileTypes:true})) {
+    if (entry.isSymbolicLink()) throw new Error(`host.${platform}.sources must not contain symlinks: ${resolve(dir, entry.name)}`);
+    if (entry.isDirectory()) check(resolve(dir, entry.name));
+  } };
+  check(path);
   // SwiftPM requires target paths inside its package. Link the app sources without copying them.
   const slot = `.build/app-host-${buildHash(path).slice(0,16)}`, link = resolve(ROOT, 'host/apple', slot); mkdirSync(dirname(link), {recursive:true});
   try { symlinkSync(path, link, 'dir'); } catch (error) { if (error.code !== 'EEXIST') throw error; } if (realpathSync(link) !== realpathSync(path)) throw new Error('custom Apple host source link differs');

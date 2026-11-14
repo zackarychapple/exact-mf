@@ -672,7 +672,7 @@
           "description": "iOS: `minimumOS` (default 17.0), `deviceFamily` (iphone, ipad), and the keys below.",
           "type": "object",
           "properties": {
-            "sources": { "type": "string", "minLength": 1, "description": "App-relative Swift executable source directory. Uses checkout ExactKit. With --host, replaces the embedding host entry." },
+            "sources": { "type": "string", "minLength": 1, "description": "App-relative Swift executable source directory. Uses checkout ExactKit. With --host, replaces the embedding host entry. Nested symlinks are refused." },
             "webBrowser": {
               "type": "boolean",
               "description": "Opt in to Apple's managed default-browser role for the iOS app. Requires http and https in protocol_handlers and Apple's approval of com.apple.developer.web-browser in its provisioning profile. Extensions, App Clips and tvOS never inherit this role. distribution_only on the pair also limits the entitlement to distributed builds. Absent or false: no browser entitlement and no HTTP/HTTPS registration on iOS."
@@ -814,7 +814,7 @@
           "description": "macOS: `minimumOS` (default 14.0), the first window's size, and the keys below.",
           "type": "object",
           "properties": {
-            "sources": { "type": "string", "minLength": 1, "description": "App-relative Swift executable source directory. Uses checkout ExactKit. With --host, replaces the embedding host entry." },
+            "sources": { "type": "string", "minLength": 1, "description": "App-relative Swift executable source directory. Uses checkout ExactKit. With --host, replaces the embedding host entry. Nested symlinks are refused." },
             "presenter": {
               "enum": ["native", "painted"],
               "description": "Absent: native. Painted builds the app’s <macos-crate>-painted binary as a benchmark carrier; distribution is refused until its accessibility gate passes."
