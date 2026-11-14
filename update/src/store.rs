@@ -798,6 +798,10 @@ impl Store {
         }
     }
 
+    pub(crate) fn download_owner(&self) -> &Arc<std::fs::File> {
+        &self._owner
+    }
+
     pub(crate) fn download(
         &self,
         head_url: &str,
@@ -1397,10 +1401,10 @@ impl Store {
     /// Remove what no role keeps: every entry but the selected, pending,
     /// last-good and running ones and the head accepted at the floor (its
     /// signed witness), then every blob none of them names. Best effort.
-    /// It runs where no download of this store can be in flight — at open,
-    /// and as a check finishes — and never touches a temporary.
-    fn collect(&self) {
-        if self.frozen {
+    /// Request snapshots and unconsumed results retain the owner lock and defer collection.
+    /// A later check or open collects entries abandoned without admission.
+    pub(crate) fn collect(&self) {
+        if self.frozen || Arc::strong_count(&self._owner) > 1 {
             return;
         }
         let keep: std::collections::BTreeSet<&String> = [

@@ -83,8 +83,10 @@ pub struct CheckRequest {
 }
 
 /// A finished download, ready to revalidate against the live client record.
+/// Retains the store lock and prevents collection until admission or disposal.
 #[derive(Debug)]
 pub struct DownloadedCheck {
+    owner: std::sync::Arc<std::fs::File>,
     dir: PathBuf,
     head: String,
     envelope: Result<crate::Envelope, String>,
@@ -111,6 +113,7 @@ impl CheckRequest {
         };
         let envelope = self.store.download(&self.head, fetch, &mut embedded);
         DownloadedCheck {
+            owner: self.store.download_owner().clone(),
             dir: self.store.dir().to_path_buf(),
             head: self.head,
             envelope,
@@ -131,13 +134,18 @@ impl Store {
     }
 
     /// Revalidate downloaded bytes against the live admission and rollback state.
+    /// The result must belong to this Store instance, not merely the same directory.
     pub fn finish_download(&mut self, downloaded: DownloadedCheck) -> Result<Check, String> {
-        if downloaded.dir != self.dir() {
+        if !std::sync::Arc::ptr_eq(self.download_owner(), &downloaded.owner) {
             return Err("the update store changed during its check".into());
         }
-        let envelope = downloaded.envelope?;
         let mut embedded = |name: &str| downloaded.digests.get(name).cloned().flatten();
-        self.finish_check(envelope, &downloaded.head, &mut embedded)
+        let outcome = downloaded
+            .envelope
+            .and_then(|envelope| self.finish_check(envelope, &downloaded.head, &mut embedded));
+        drop(downloaded.owner);
+        self.collect();
+        outcome
     }
 }
 
@@ -322,11 +330,12 @@ impl Client {
 
     /// Adopt a downloaded check under the host mutex. Only its result is
     /// applied; boot and activation state changed during the fetch survives.
-    pub fn finish_check(&mut self, downloaded: DownloadedCheck) -> Outcome {
+    pub fn finish_check(&mut self, mut downloaded: DownloadedCheck) -> Outcome {
         if downloaded.dir != self.dir() || self.head_url.as_deref() != Some(&downloaded.head) {
             return Outcome::Refused("the update client changed during its check".into());
         }
         self.digests.extend(downloaded.digests.clone());
+        downloaded.digests = self.digests.clone();
         match self.store.finish_download(downloaded) {
             Ok(Check::Current { .. }) => Outcome::Current,
             Ok(Check::Staged { entry, seq, .. }) => Outcome::Staged { entry, seq },
@@ -477,6 +486,117 @@ mod tests {
             "assets": [], "stream": {"channel": "prod", "compatibilityId": "abc", "seq": seq}
         }))
         .unwrap()
+    }
+
+    #[test]
+    #[cfg_attr(windows, ignore = "Windows durable store is not qualified")]
+    fn finishing_an_older_download_preserves_newer_results_until_admission() {
+        let base = temp("older-first");
+        let mut client = Client::open_at(&base, &base, COMPAT, b"embedded", Some(ORIGIN)).unwrap();
+        let fetch = |seq, plan: &[u8]| {
+            client.begin_check().unwrap().fetch(&mut |url| {
+                Ok(if url.ends_with("exact.json") {
+                    head(seq, plan)
+                } else {
+                    plan.to_vec()
+                })
+            })
+        };
+        let older = fetch(1, b"older");
+        let newer = fetch(2, b"newer");
+        let abandoned = fetch(3, b"abandoned");
+        assert!(matches!(
+            client.finish_check(older),
+            Outcome::Staged { seq: 1, .. }
+        ));
+        assert!(matches!(
+            client.finish_check(newer),
+            Outcome::Staged { seq: 2, .. }
+        ));
+        let blob = client.dir().join("blobs").join(sha256_hex(b"abandoned"));
+        assert!(blob.exists());
+        drop(abandoned);
+        client.store.collect();
+        assert!(!blob.exists());
+        assert_eq!(
+            client.prepare_activation().unwrap().unwrap().plan.as_ref(),
+            b"newer"
+        );
+        let result = client
+            .begin_check()
+            .unwrap()
+            .fetch(&mut |_| Err("offline".into()));
+        drop(client);
+        assert!(Client::open_at(&base, &base, COMPAT, b"embedded", Some(ORIGIN)).is_err());
+        drop(result);
+        let reopened = Client::open_at(&base, &base, COMPAT, b"embedded", Some(ORIGIN)).unwrap();
+        drop(reopened);
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    #[cfg_attr(windows, ignore = "Windows durable store is not qualified")]
+    fn collection_preserves_blobs_while_another_payload_fetch_is_held() {
+        let base = temp("held-payload");
+        let mut client = Client::open_at(&base, &base, COMPAT, b"embedded", Some(ORIGIN)).unwrap();
+        let older = client.begin_check().unwrap().fetch(&mut |url| {
+            Ok(if url.ends_with("exact.json") {
+                head(1, b"older")
+            } else {
+                b"older".to_vec()
+            })
+        });
+        let request = client.begin_check().unwrap();
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let mut envelope: serde_json::Value =
+                serde_json::from_slice(&head(2, b"newer")).unwrap();
+            envelope["assets"] = serde_json::json!([{
+                "name": "payload", "url": "./payload", "sha256": sha256_hex(b"payload"), "bytes": 7
+            }]);
+            request.fetch(&mut |url| {
+                if url.ends_with("exact.json") {
+                    Ok(serde_json::to_vec(&envelope).unwrap())
+                } else if url.ends_with("app.plan") {
+                    Ok(b"newer".to_vec())
+                } else {
+                    entered_tx.send(()).unwrap();
+                    release_rx
+                        .recv_timeout(std::time::Duration::from_secs(30))
+                        .unwrap();
+                    Ok(b"payload".to_vec())
+                }
+            })
+        });
+        entered_rx
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .unwrap();
+        let blob = client.dir().join("blobs").join(sha256_hex(b"newer"));
+        assert!(blob.exists());
+        assert!(matches!(
+            client.finish_check(older),
+            Outcome::Staged { seq: 1, .. }
+        ));
+        assert!(blob.exists());
+        release_tx.send(()).unwrap();
+        assert!(matches!(
+            client.finish_check(worker.join().unwrap()),
+            Outcome::Staged { seq: 2, .. }
+        ));
+        let selected = client.prepare_activation().unwrap().unwrap();
+        assert_eq!(selected.plan.as_ref(), b"newer");
+        assert_eq!(
+            selected
+                .assets
+                .resolve("payload")
+                .unwrap()
+                .unwrap()
+                .as_ref(),
+            b"payload"
+        );
+        drop(client);
+        let _ = std::fs::remove_dir_all(base);
     }
 
     #[test]

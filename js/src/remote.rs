@@ -469,6 +469,33 @@ mod tests {
     }
 
     #[test]
+    fn concurrent_downloads_can_finish_in_sequence() {
+        let dir = Directory::new();
+        let mut owner = RemoteCoordinator::new(dir.store());
+        let older = download(&owner, 1);
+        let newer = download(&owner, 2);
+        assert!(matches!(
+            owner.finish_check(older),
+            Ok(Check::Staged { seq: 1, .. })
+        ));
+        assert!(matches!(
+            owner.finish_check(newer),
+            Ok(Check::Staged { seq: 2, .. })
+        ));
+        let selected = owner.store().prepare_activation().unwrap().unwrap();
+        assert_eq!(selected.generation.seq, 2);
+        assert_eq!(
+            selected
+                .assets
+                .resolve("remote.hbc")
+                .unwrap()
+                .unwrap()
+                .as_ref(),
+            BYTECODE
+        );
+    }
+
+    #[test]
     fn downloads_revalidate_live_floor_and_generation_without_blocking_queries() {
         let dir = Directory::new();
         let mut owner = RemoteCoordinator::new(dir.store());
