@@ -78,3 +78,24 @@ Existing proof artifacts remain unchanged.
 
 An initial host binary can require separate distribution while its signed update bundle is safe to publish.
 That binary notice does not block export. A refused stream or a failed publication still blocks transport.
+
+With `--zephyr-config`, Exact reads the site identity once before classification and release generation.
+It inserts the site's compact host import map into web HTML before computing release IDs and inventory hashes.
+This preparation includes `.html` and `.htm` paths, without case sensitivity.
+Exact refuses unrelated import maps, unsupported insertion points and HTML listed as a bundle asset.
+Native plans and assets remain unchanged. Custom transports and unconfigured builds keep their existing transformation.
+
+This preparation assumes the observed Zephyr worker behavior: remove import maps, then insert the host map before
+the first exact `<script type="module"` substring, or before `</head>` when no such substring exists.
+Only an exact existing host map is accepted. Preparation is idempotent.
+The worker currently maps `env:vars:APP.PROJECT.ORG` to `/zephyr-manifest.json`.
+If this service behavior changes, complete remote byte readback refuses the upload result.
+Exact does not normalize verification bytes or modify frozen exports.
+
+Before upload, Exact checks all retained web HTML for compatibility with the captured site identity.
+Unprepared history or a changed site identity requires a new retained origin. Preserve the old origin separately.
+Exact never rewrites completed releases or discards history automatically.
+
+The root-relative `/zephyr-manifest.json` supplies Zephyr runtime configuration outside the Exact inventory.
+Current Exact code does not consume its host specifier. The staged package declares no remotes.
+Readback also fetches this runtime manifest and refuses dependencies. This preparation supports only the host map.

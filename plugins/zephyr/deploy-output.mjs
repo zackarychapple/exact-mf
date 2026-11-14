@@ -11,7 +11,7 @@ export async function deploymentOutput({ opts, origin, app, failed = [], refused
   if (opts.zephyrConfig) {
     const rel = relative(resolve(opts.export), resolve(opts.zephyrConfig));
     if (!rel || !isAbsolute(rel) && rel !== '..' && !rel.startsWith('../')) throw new Error('Keep Zephyr configuration outside the public snapshot');
-    site = readSiteConfig(opts.zephyrConfig);
+    site = opts.zephyrSite ?? readSiteConfig(opts.zephyrConfig);
   }
   const exported = await exportSnapshot(origin, app, opts.export);
   const frozen = openOrigin(exported.directory);

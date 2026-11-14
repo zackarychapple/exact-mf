@@ -4,6 +4,7 @@ import { resolve, dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { sha256 } from '../../scripts/origin.mjs';
+import { checkPreparedSnapshot } from './prepare.mjs';
 import { collectSnapshot } from './snapshot.mjs';
 
 export function readSiteConfig(path) {
@@ -11,10 +12,15 @@ export function readSiteConfig(path) {
   if (!site || typeof site !== 'object' || Array.isArray(site)
     || Object.keys(site).some(key => !['org', 'project', 'app'].includes(key))) throw new Error('Zephyr config accepts only org, project and app');
   validateSite(site);
-  return site;
+  return Object.freeze(site);
 }
 function validateSite(site) {
-  for (const key of ['org', 'project', 'app']) if (!/^[a-z0-9][a-z0-9-]*$/.test(site?.[key] ?? '')) throw new Error(`invalid site ${key}`);
+  for (const key of ['org', 'project', 'app']) if (typeof site?.[key] !== 'string' || !/^[a-z0-9][a-z0-9-]*$/.test(site[key])) throw new Error(`invalid site ${key}`);
+}
+export function assertHostOnlyManifest(manifest) {
+  if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest)) throw new Error('Invalid Zephyr runtime manifest');
+  const dependencies = manifest.dependencies;
+  if (dependencies != null && (typeof dependencies !== 'object' || Object.keys(dependencies).length)) throw new Error('Zephyr runtime manifest dependencies are unsupported by host-only HTML preparation');
 }
 async function fetchBytes(url) {
   const response = await fetch(url, { redirect: 'error', signal: AbortSignal.timeout(30000), headers: { 'User-Agent': 'Exact-Zephyr-verification' } });
@@ -37,6 +43,7 @@ export async function publishSnapshot({ origin, app, site, control, dryRun = fal
     before = await control.inspect(site);
     if (!before.identityMatches || strictPolicy && (!before.noAutomaticPromotion || process.env.ZE_ENV)) throw new Error('Upload policy inspection failed');
   }
+  checkPreparedSnapshot(files, site);
   const uploadId = randomUUID();
   files.set('exact-zephyr-upload-id.txt', Buffer.from(uploadId));
   let result;
@@ -53,6 +60,8 @@ export async function publishSnapshot({ origin, app, site, control, dryRun = fal
       const received = await fetchFile(new URL(path, base).href);
       if (!received || sha256(received) !== sha256(bytes)) throw new Error(`Uploaded snapshot verification failed: ${path}`);
     }
+    const manifest = JSON.parse(Buffer.from(await fetchFile(new URL('zephyr-manifest.json', base).href)).toString('utf8'));
+    assertHostOnlyManifest(manifest);
     if (promote) {
       const now = await control.inspect(site);
       if (!now.identityMatches || strictPolicy && !now.noAutomaticPromotion || now.versionId !== before.versionId) throw new Error('Environment changed during upload');

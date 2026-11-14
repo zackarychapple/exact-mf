@@ -1,3 +1,4 @@
+import { prepareHtml } from './prepare.mjs';
 import { test, expect } from 'bun:test';
 import { generateKeyPairSync, sign } from 'node:crypto';
 import { canonicalBytes } from '../../scripts/deploy-signing.mjs';
@@ -12,22 +13,25 @@ test('the published CLI logger prefixes both the completion message and version 
 });
 import { publishRoot } from '../../scripts/deploy.mjs';
 
-function fixture() {
+function fixture(site = { org: 'org', project: 'project', app: 'app' }) {
   const { privateKey, publicKey } = generateKeyPairSync('ed25519');
   const app = { id: 'test', displayName: 'Test', manifest: { deploy: { signing: { keys: { test: publicKey.export({ type: 'spki', format: 'der' }).subarray(-32).toString('base64') } } } } };
   const files = new Map();
   const old = Buffer.from('previous Hermes blob'), current = Buffer.from('current MF blob');
+  const nativeHtml = Buffer.from('<head></head><h1>Native HTML asset</h1>');
+  const assetDigest = sha256(nativeHtml);
+  files.set(`.exact/blobs/${assetDigest}`, nativeHtml);
   function head(blob, seq) {
     const digest = sha256(blob);
     files.set(`.exact/blobs/${digest}`, blob);
-    const envelope = { exact: 1, app: { id: 'test', name: 'Test' }, stream: { app: 'test', channel: 'prod', compatibilityId: 'cohort', seq }, release: `v${seq}`, plan: { url: `../../blobs/${digest}`, sha256: digest, bytes: blob.length }, assets: [] };
+    const envelope = { exact: 1, app: { id: 'test', name: 'Test' }, stream: { app: 'test', channel: 'prod', compatibilityId: 'cohort', seq }, release: `v${seq}`, plan: { url: `../../blobs/${digest}`, sha256: digest, bytes: blob.length }, assets: [{ name: 'native.HTML', url: `../../blobs/${assetDigest}`, sha256: assetDigest, bytes: nativeHtml.length }] };
     envelope.signature = { keyId: 'test', ed25519: sign(null, canonicalBytes(envelope), privateKey).toString('base64') };
     return envelope;
   }
   const previous = head(old, 1), next = head(current, 2);
   files.set('.exact/prod/cohort/exact.json', Buffer.from(JSON.stringify(next)));
   for (const envelope of [previous, next]) files.set(`.exact/prod/cohort/releases/${envelope.release}.json`, Buffer.from(JSON.stringify({ envelope })));
-  const html = Buffer.from('<h1>Exact</h1>'), id = 'a'.repeat(64);
+  const html = prepareHtml(Buffer.from('<head></head><h1>Exact</h1>'), site), id = 'a'.repeat(64);
   files.set('.exact/root/web/exact.json', Buffer.from(JSON.stringify({ webRoot: 1, id, files: [{ name: 'index.html', sha256: sha256(html), sourceSha256: sha256(html), bytes: html.length }] })));
   files.set(`.exact/root/web/releases/${id}/index.html`, html);
   files.set(`.exact/root/web/inventories/${id}.json`, files.get('.exact/root/web/exact.json')); 
@@ -49,7 +53,7 @@ test('complete graph retains hidden records and previous blobs; tampering blocks
 });
 
 test('dry run makes no calls; wrong identity and failed verification never promote', async () => {
-  const f = fixture();
+  const f = fixture({ org: 'test', project: 'test', app: 'test' });
   let uploads = 0, promotions = 0;
   const site = { org: 'test', project: 'test', app: 'test' };
   const receipt = { applicationUid: 'test.test.test', versionUrl: 'https://immutable.example/' };
@@ -81,12 +85,12 @@ test('directory export materializes the browser root and excludes locks and unre
     writeFileSync(resolve(source, '.exact/blobs/unreferenced'), 'private input');
     const output = resolve(dir, 'snapshot');
     await exportSnapshot(new DirectoryOrigin(source), f.app, output);
-    expect(readFileSync(resolve(output, 'index.html'), 'utf8')).toBe('<h1>Exact</h1>');
+    expect(readFileSync(resolve(output, 'index.html'), 'utf8')).toContain('<h1>Exact</h1>');
     expect(existsSync(resolve(output, `.exact/blobs/${sha256(f.old)}`))).toBe(true);
     expect(existsSync(resolve(output, '.exact/prod/cohort/.lock'))).toBe(false);
     expect(existsSync(resolve(output, '.exact/blobs/unreferenced'))).toBe(false);
     await expect(exportSnapshot(new DirectoryOrigin(source), f.app, output)).rejects.toThrow();
-    expect(readFileSync(resolve(output, 'index.html'), 'utf8')).toBe('<h1>Exact</h1>');
+    expect(readFileSync(resolve(output, 'index.html'), 'utf8')).toContain('<h1>Exact</h1>');
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
@@ -99,9 +103,14 @@ test('verified immutable snapshot permits explicit promotion', async () => {
     resolveBuild: async () => ({ ...receipt, versionId: 'new' }),
     promote: async (_site, input) => { expect(input).toEqual({ versionId: 'new', expectedVersionId: 'old' }); promoted = true; },
   };
+  await expect(publishSnapshot({ ...f, site: { org: 'org', project: 'project', app: 'app' }, control, promote: true,
+    upload: async files => { uploaded = files; return receipt; },
+    fetchFile: async url => new URL(url).pathname === '/zephyr-manifest.json' ? Buffer.from('{"dependencies":{"remote":{}}}') : uploaded.get(new URL(url).pathname.slice(1)),
+  })).rejects.toThrow('dependencies');
+  expect(promoted).toBe(false);
   await publishSnapshot({ ...f, site: { org: 'org', project: 'project', app: 'app' }, control, promote: true,
     upload: async files => { uploaded = files; return receipt; },
-    fetchFile: async url => uploaded.get(new URL(url).pathname.slice(1)),
+    fetchFile: async url => new URL(url).pathname === '/zephyr-manifest.json' ? Buffer.from('{}') : uploaded.get(new URL(url).pathname.slice(1)),
   });
   expect(promoted).toBe(true);
 });
@@ -129,6 +138,7 @@ console.log('Updated 1 targets in 4ms\\n- https://stable.example/');
   globalThis.fetch = async url => {
     const invoked = JSON.parse(fs.readFileSync(capture, 'utf8'));
     const path = new URL(url).pathname.slice(1);
+    if (path === 'zephyr-manifest.json') return new Response('{}');
     if (process.env.EXACT_ZEPHYR_TEST_MODE === 'wrong-marker' && path === 'exact-zephyr-upload-id.txt') return new Response('another upload');
     if (process.env.EXACT_ZEPHYR_TEST_MODE === 'tampered' && path === 'index.html') return new Response('HTML fallback');
     return new Response(fs.readFileSync(resolve(invoked.cwd, 'dist', path)));
@@ -148,11 +158,12 @@ test('configured deploy output invokes pinned CLI and verifies bytes without con
   await withFakeCli(async ({ fs, resolve, dir, capture }) => {
     const { DirectoryOrigin } = await import('../../scripts/origin.mjs');
     const { deploymentOutput } = await import('./deploy-output.mjs');
+    const { readSiteConfig } = await import('./index.mjs');
     const f = fixture(), source = resolve(dir, 'origin'), config = resolve(dir, 'site.json');
     const { INSTALL_PUBLIC } = await import('../../scripts/install-page.mjs');
     const rootPath = '.exact/root/web/exact.json', root = JSON.parse(f.files.get(rootPath));
     for (const path of INSTALL_PUBLIC) {
-      const name = path.slice(1), body = Buffer.from(name.endsWith('.json') ? '{}' : '<h1>Install</h1>');
+      const name = path.slice(1), body = name.endsWith('.json') ? Buffer.from('{}') : prepareHtml(Buffer.from('<head></head><h1>Install</h1>'), { org: 'org', project: 'project', app: 'app' });
       root.files.push({ name, bytes: body.length, sha256: sha256(body), sourceSha256: sha256(body) });
       f.files.set(`.exact/root/web/releases/${root.id}/${name}`, body);
     }
@@ -164,7 +175,9 @@ test('configured deploy output invokes pinned CLI and verifies bytes without con
       fs.writeFileSync(path, bytes);
     }
     fs.writeFileSync(config, JSON.stringify({ org: 'org', project: 'project', app: 'app' }));
-    const result = await deploymentOutput({ opts: { yes: true, export: resolve(dir, 'export'), zephyrConfig: config }, origin: new DirectoryOrigin(source), app: f.app,
+    const zephyrSite = readSiteConfig(config);
+    fs.writeFileSync(config, JSON.stringify({ org: 'changed', project: 'changed', app: 'changed' }));
+    const result = await deploymentOutput({ opts: { yes: true, export: resolve(dir, 'export'), zephyrConfig: config, zephyrSite }, origin: new DirectoryOrigin(source), app: f.app,
       refused: [{ kind: 'binary', reason: 'Initial host binary must be distributed separately' }] });
     expect(result.transport.verified).toBe(true);
     expect(result.transport.versionUrl).toBe('https://immutable.example/');
@@ -292,4 +305,66 @@ const result=spawnSync(${JSON.stringify(realCargo)},process.argv.slice(2),{stdio
     expect(fs.existsSync(capture)).toBe(false);
     expect(fs.existsSync(resolve(dir, 'export'))).toBe(false);
   });
+});
+
+test('Zephyr preparation precedes release identity and inventory hashes without changing native assets', async () => {
+  const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { resolve } = await import('node:path');
+  const { webRelease, classify } = await import('../../scripts/deploy.mjs');
+  const { checkPreparedSnapshot } = await import('./prepare.mjs');
+  const dir = mkdtempSync(resolve(tmpdir(), 'exact-zephyr-preparation-'));
+  const site = { org: 'org', project: 'project', app: 'app' };
+  const html = '<head><meta charset="utf-8"></head><script type="module" src="app.js"></script>';
+  try {
+    mkdirSync(resolve(dir, 'nested'));
+    for (const name of ['index.html', 'nested/page.HTML', 'nested/page.htm']) writeFileSync(resolve(dir, name), html);
+    const plain = webRelease(dir), prepared = webRelease(dir, site);
+    expect(prepared.pointer.id).not.toBe(plain.pointer.id);
+    expect(webRelease(dir, { ...site, app: 'other' }).pointer.id).not.toBe(prepared.pointer.id);
+    for (const file of prepared.files) {
+      expect(file.body.toString()).toContain('env:vars:app.project.org');
+      const card = prepared.pointer.files.find(card => card.name === file.name);
+      expect(card.sha256).toBe(sha256(file.body));
+      expect(card.sourceSha256).toBe(sha256(prepareHtml(Buffer.from(html), site)));
+    }
+    const origin = { describe: () => 'test origin', get: async () => null, withLock: async (_stream, run) => run(), put: async (path, bytes) => stored.set(path, bytes), putHead: async (_stream, bytes) => stored.set('.exact/root/web/exact.json', bytes) };
+    const stored = new Map();
+    origin.get = async path => stored.get(path) ?? null;
+    await publishRoot({ origin, web: dir, site, row: {} });
+    expect(JSON.parse(stored.get(`.exact/root/web/inventories/${prepared.pointer.id}.json`))).toEqual(prepared.pointer);
+    checkPreparedSnapshot(stored, site);
+    const input = { app: { manifest: {} }, opts: { zephyrSite: site }, origin, channel: 'prod', snapshot: {}, web: dir, compat: {}, platforms: [], wantOrigin: true };
+    expect((await classify(input)).rows[0].action).toBe('current');
+    expect((await classify({ ...input, opts: { zephyrSite: { ...site, app: 'other' } } })).rows[0].action).toBe('publish');
+    expect(() => prepareHtml(Buffer.from('<head><meta charset=latin1></head>'), site)).toThrow('UTF-8');
+    const { assertHostOnlyManifest } = await import('./index.mjs');
+    expect(() => assertHostOnlyManifest({ dependencies: { remote: {} } })).toThrow('dependencies');
+    expect(() => assertHostOnlyManifest({ dependencies: [] })).not.toThrow();
+    expect(() => checkPreparedSnapshot(new Map([['old.html', Buffer.from(html)]]), site)).toThrow('new retained origin');
+    checkPreparedSnapshot(new Map([['.exact/blobs/abc', Buffer.from(html)]]), site);
+    expect(() => prepareHtml(Buffer.from('<head><script type="importmap">{"imports":{}}</script></head>'), site)).toThrow('unrelated');
+    expect(() => prepareHtml(Buffer.from('<h1>No insertion</h1>'), site)).toThrow('insertion');
+    expect(prepareHtml(prepareHtml(Buffer.from(html), site), site)).toEqual(prepareHtml(Buffer.from(html), site));
+    const asset = Buffer.from(html);
+    writeFileSync(resolve(dir, 'app.plan'), asset);
+    writeFileSync(resolve(dir, 'exact.json'), JSON.stringify({ plan: { sha256: sha256(asset), bytes: asset.length }, assets: [{ name: 'nested/page.HTML', sha256: sha256(asset), bytes: asset.length }] }));
+    expect(() => webRelease(dir, site)).toThrow('HTML bundle asset');
+    expect(() => webRelease(dir)).not.toThrow();
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+
+test('unprepared retained HTML fails before upload and preserves history', async () => {
+  const f = fixture();
+  const rootPath = '.exact/root/web/exact.json';
+  const root = JSON.parse(f.files.get(rootPath));
+  const html = Buffer.from('<head></head>');
+  root.files[0] = { name: 'index.html', sha256: sha256(html), sourceSha256: sha256(html), bytes: html.length };
+  f.files.set(rootPath, Buffer.from(JSON.stringify(root)));
+  f.files.set(`.exact/root/web/releases/${root.id}/index.html`, html);
+  let uploads = 0;
+  await expect(publishSnapshot({ ...f, site: { org: 'org', project: 'project', app: 'app' }, upload: async () => { uploads++; } })).rejects.toThrow('new retained origin');
+  expect(uploads).toBe(0);
+  expect(f.files.get(`.exact/root/web/releases/${root.id}/index.html`)).toEqual(html);
 });

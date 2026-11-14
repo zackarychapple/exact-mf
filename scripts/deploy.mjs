@@ -46,6 +46,7 @@ import { blobPath, channelOrigin, openOrigin, OriginUnavailable, sha256, streamP
 import { filesystemLock, removePrivateTree } from './filesystem.mjs';
 import { entryPlans, listBuildFiles, listPublicFiles, readStaticCandidate } from '../host/web/serve.mjs';
 import { BESIDE, STAGE } from '../host/web/beside.mjs';
+import { prepareWebBytes } from '../plugins/zephyr/prepare.mjs';
 const ROOT = resolve(new URL('..', import.meta.url).pathname);
 const PLATFORMS = ['web', 'ios', 'macos', 'linux'];
 const USAGE = 'usage: bun scripts/deploy.mjs <app> [--origin <dir|url>] [--channel <name>] [--only bundle|origin] [--platform <web|ios|macos|linux>]... [--snapshot <sha>] [--dirty] [--release <id>] [--keys <dir>] [--export <new-directory>] [--transport <module> | --zephyr-config <json>] [--json] [--yes]\n       bun scripts/deploy.mjs keygen <id> [--keys <dir>] [--json]';
@@ -962,7 +963,7 @@ export async function classify({ app, opts, origin, channel, snapshot, release, 
       const oldNames = previous ? previous.files.map((f) => f.name)
         : origin.dir && existsSync(origin.dir) ? listPublicFiles(origin.dir) : [];
       for (const rel of names) {
-        const bytes = readStaticCandidate(web, rel);
+        const bytes = prepareWebBytes(web, rel, readStaticCandidate(web, rel), opts.zephyrSite);
         const card = previous?.files.find((f) => f.name === rel);
         const have = await origin.get(previous ? `${webReleasePath(previous.id)}/${rel}` : rel);
         if (!have || previous && !card) files.new.push(rel);
@@ -1178,8 +1179,8 @@ function webRootFiles(web) {
 
 /** Capture one complete web graph. The identity binds every original byte
  * and this encoding version; generated links all name that immutable tree. */
-export function webRelease(web) {
-  const files = webRootFiles(web).map((name) => ({ name, body: readStaticCandidate(web, name) }));
+export function webRelease(web, site) {
+  const files = webRootFiles(web).map((name) => ({ name, body: prepareWebBytes(web, name, readStaticCandidate(web, name), site) }));
   const source = files.map(({ name, body }) => ({ name, sha256: sha256(body) }));
   const id = sha256(canonicalBytes({ webRoot: 1, source }));
   const prefix = `/${webReleasePath(id)}/`;
@@ -1244,8 +1245,8 @@ export function webRelease(web) {
 
 /** Every payload lands immutably and is read back before the only mutable
  * pointer moves. A failed or concurrent publish cannot damage the prior graph. */
-export async function publishRoot({ origin, row, web, log = () => {} }) {
-  const { pointer, files } = webRelease(web);
+export async function publishRoot({ origin, row, web, site, log = () => {} }) {
+  const { pointer, files } = webRelease(web, site);
   return origin.withLock(webRootStream, async () => {
     const before = await origin.get(webRootPath);
     if (before && parseWebRoot(before).id === pointer.id) {
@@ -1304,6 +1305,7 @@ async function deployCaptured(opts, capsule) {
     || canonicalPath(app.workspace) !== canonicalPath(capsule.app.workspace)) {
     refuse('the captured app resolver does not select the app and workspace frozen by the launcher');
   }
+  if (opts.zephyrConfig) opts.zephyrSite = (await import('../plugins/zephyr/index.mjs')).readSiteConfig(opts.zephyrConfig);
   const snapshot = capsule.snapshot;
   const release = capsule.release;
   const channel = opts.channel ?? channelOf(app.manifest);
@@ -1376,7 +1378,7 @@ async function deployCaptured(opts, capsule) {
       if (row.action === 'unavailable') { failed.push({ kind: 'origin', error: row.reason }); log(`  origin: unavailable — ${row.reason}`); continue; }
       if (row.action !== 'publish') { published.push({ ...row, action: 'current' }); continue; }
       // A step that fails leaves what was there; the run goes on to the next row and exits 1.
-      try { published.push(await publishRoot({ origin, row, web: webRoot, log })); } catch (e) { failed.push({ kind: 'origin', error: e.message }); log(`  origin: failed — ${e.message}`); }
+      try { published.push(await publishRoot({ origin, row, web: webRoot, site: opts.zephyrSite, log })); } catch (e) { failed.push({ kind: 'origin', error: e.message }); log(`  origin: failed — ${e.message}`); }
       continue;
     }
     const name = `${row.platform ?? '?'} ${row.kind} ${row.compatibilityId.slice(0, 8)}`;
