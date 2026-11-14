@@ -1394,7 +1394,7 @@ async function deployCaptured(opts, capsule) {
     if (opts.transport) {
       const transport = await import((await import('node:url')).pathToFileURL(opts.transport).href);
       if (typeof transport.default !== 'function') refuse('--transport module must export a default function');
-      exported.transport = await transport.default({ origin, app, snapshot: exported });
+      exported.transport = await transport.default({ origin: openOrigin(exported.directory), app, snapshot: exported });
     }
   }
   const outcome = { ...table, dryRun: false, published, refused, failed, exported };

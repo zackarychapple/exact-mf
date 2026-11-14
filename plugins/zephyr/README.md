@@ -37,6 +37,7 @@ The CLI upload marker and application identity must match this site's build hist
 
 To connect the normal deploy command, provide a local module through `--transport /absolute/zephyr-transport.mjs`.
 Its default function receives `{origin, app, snapshot}` after successful publication and export.
+This `origin` reads the frozen export directory, so a concurrent retained-origin publish cannot change the upload.
 The module calls `publishSnapshot({origin, app, site, control, promote: true})` with the control hooks above.
 Exact does not load the hook during a dry run or after a failed build or refused stream.
 Keep this module and its account configuration outside the exported directory.
