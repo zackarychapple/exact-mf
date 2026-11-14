@@ -7,7 +7,7 @@ import { inspectHead } from '../../scripts/deploy.mjs';
 export async function collectSnapshot(origin, app) {
   const files = new Map();
   function publicName(name) {
-    if (name.split('/').some(p => p.startsWith('.')) || /(?:\.map|\.pem|\.key|\.lock|\.rs|\.ts|\.contract)$/.test(name)
+    if (name.split('/').some(p => p.startsWith('.')) || /(?:\.map|\.pem|\.key|\.p12|\.pfx|\.p8|\.lock|\.rs|\.ts|\.contract)$/.test(name)
       || /(?:^|\/)(?:node_modules|target|src|package.json|bun.lock|Cargo.lock|AGENTS.md)(?:\/|$)/i.test(name)) throw new Error(`private public path: ${name}`);
   }
   async function add(path, card) {
@@ -23,6 +23,7 @@ export async function collectSnapshot(origin, app) {
     const result = inspectHead({ bytes }, app, stream);
     if (!result.usable || !result.authenticated) throw new Error(`snapshot envelope: ${result.problem ?? 'signature required'}`);
     for (const card of [result.head.plan, ...result.head.assets ?? []]) {
+      if (card.name) publicName(card.name);
       if (card.url !== `../../blobs/${card.sha256}`) throw new Error('snapshot requires local content-addressed blobs');
       await add(`.exact/blobs/${card.sha256}`, card);
     }
