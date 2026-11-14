@@ -81,3 +81,19 @@ test('directory export materializes the browser root and excludes locks and unre
     expect(readFileSync(resolve(output, 'index.html'), 'utf8')).toBe('<h1>Exact</h1>');
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('verified immutable snapshot permits explicit promotion', async () => {
+  const f = fixture();
+  let uploaded, promoted = false;
+  const receipt = { applicationUid: 'app.project.org', versionUrl: 'https://immutable.example/' };
+  const control = {
+    inspect: async () => ({ identityMatches: true, noAutomaticPromotion: true, versionId: 'old' }),
+    resolveBuild: async () => ({ ...receipt, versionId: 'new' }),
+    promote: async (_site, input) => { expect(input).toEqual({ versionId: 'new', expectedVersionId: 'old' }); promoted = true; },
+  };
+  await publishSnapshot({ ...f, site: { org: 'org', project: 'project', app: 'app' }, control, promote: true,
+    upload: async files => { uploaded = files; return receipt; },
+    fetchFile: async url => uploaded.get(new URL(url).pathname.slice(1)),
+  });
+  expect(promoted).toBe(true);
+});

@@ -26,7 +26,7 @@ The caller implements these hooks through its supported authenticated Zephyr con
 
 `inspect` must check deployment rules and the CLI user before upload. Do not return constant approvals.
 Unset `ZE_ENV`. Disable automatic environment or tag rules for this upload app.
-The uploader can activate those rules before returning. A nonempty `targetUrls` receipt causes refusal but cannot undo that activation.
+The uploader can activate those rules before returning. The CLI 1.4.1 transport cannot undo automatic activation. The control-plane policy check must exclude it before upload.
 `promote: true` verifies every immutable file before requesting promotion. The stale-read check is not atomic compare-and-swap.
 The caller must verify stable content after promotion. `dryRun: true` performs no transport or control-plane writes.
 
