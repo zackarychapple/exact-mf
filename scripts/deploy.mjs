@@ -2,13 +2,6 @@
 import { requireReleasePins } from '../game/inputs.mjs';
 // `exact deploy` — the publisher: the verb, its policies, one library in its
 // own process, the classifier, the compatibility id and the signed head.
-// The repo has no `exact` binary; this script is the verb:
-//
-//   bun scripts/deploy.mjs <app> [--origin <dir|url>] [--channel <name>]
-//       [--only bundle|origin] [--platform <p>]… [--snapshot <sha>] [--dirty]
-//       [--release <id>] [--keys <dir>] [--export <new-directory>] [--transport <module>] [--json] [--yes]
-//   bun scripts/deploy.mjs keygen <id> [--keys <dir>] [--json]
-//
 // In order: **snapshot** — the app's tree must be committed
 // (`--dirty` publishes the working tree and says so loudly) and the snapshot
 // is `HEAD` of the repository holding the app; **bake** into a run-specific
@@ -137,17 +130,14 @@ function gitResult(repo, args, what, options = {}) {
   if (result.status !== 0) refuse(`${repo}: ${what}: ${String(result.stderr ?? result.error?.message ?? '').trim()}`);
   return result;
 }
-
 function gitText(repo, args, what, options = {}) {
   return gitResult(repo, args, what, { encoding: 'utf8', ...options }).stdout;
 }
-
 function repoTop(cwd, what = 'source') {
   const top = gitText(cwd, ['rev-parse', '--show-toplevel'], `${what} is not in a git repository`).trim();
   if (!top) refuse(`${cwd}: ${what} is not in a git repository`);
   return canonicalPath(top);
 }
-
 /** Local Cargo packages outside the app and Exact repositories are source
  * inputs too. A package can inherit fields or read inputs from its workspace
  * root, so the immutable unit is its whole repository, not just its crate. */
@@ -175,7 +165,6 @@ function cargoDependencyRoots(app, exactRoot) {
   }
   return [...repos].sort().map((cwd) => ({ role: 'cargo', cwd }));
 }
-
 /** Contract packages linked from outside the app and Exact repositories
  * (`"file:../ui"`, `bun link`) are source too: their whole
  * repository, captured beside the app's so a relative link still reaches it.
@@ -198,7 +187,6 @@ export function contractCompiler(exactRoot) {
   contractCompilers.set(key, binary);
   return binary;
 }
-
 function contractSources(appDir, exactRoot, env = process.env, compiler = contractCompiler(exactRoot)) {
   const result = spawnSync(compiler, ['sources', resolve(appDir, 'app.contract')], {
     cwd: exactRoot, env, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024,
@@ -1404,8 +1392,7 @@ async function deployCaptured(opts, capsule) {
     const { exportSnapshot } = await import('../plugins/zephyr/snapshot.mjs');
     exported = await exportSnapshot(origin, app, opts.export);
     if (opts.transport) {
-      const { pathToFileURL } = await import('node:url');
-      const transport = await import(pathToFileURL(opts.transport).href);
+      const transport = await import((await import('node:url')).pathToFileURL(opts.transport).href);
       if (typeof transport.default !== 'function') refuse('--transport module must export a default function');
       exported.transport = await transport.default({ origin, app, snapshot: exported });
     }
