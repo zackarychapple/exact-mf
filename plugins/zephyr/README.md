@@ -68,13 +68,9 @@ Do not return constant policy approvals. This stronger mode requires caller-supp
 A custom hook can still use `--transport /absolute/module.mjs` instead of `--zephyr-config`.
 Its default function receives `{origin, app, snapshot}`. The origin reads the frozen export directory.
 
-Root's isolated site is `2dee0599-4d8d-4e9a-b15d-27e1ff509850`, with environment `exact-proof`.
-Root owns live upload and any manual promotion. Existing proof artifacts remain unchanged.
-
 Web publication now retains `.exact/root/web/inventories/<id>.json` for each generation.
 The publisher writes this inventory after it verifies every payload. Export includes these completed generations and skips partial directories.
 Use a fresh retained origin for this lifecycle.
-Existing proof artifacts remain unchanged.
 
 An initial host binary can require separate distribution while its signed update bundle is safe to publish.
 That binary notice does not block export. A refused stream or a failed publication still blocks transport.
