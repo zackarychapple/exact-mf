@@ -89,7 +89,7 @@ impl RemoteHandle {
     }
 }
 
-/// An opaque, single-use whole-owner preparation token.
+/// An opaque, single-use remote preparation token.
 pub struct RemotePreparation {
     handle: RemoteHandle,
 }
@@ -104,10 +104,11 @@ struct Candidate {
 /// Host-owned admission, execution, and durable selection for one update store.
 /// MF cache eviction remains the adapter's responsibility. Each retry gets a distinct handle.
 /// Abandonment preserves Store's pending candidate and authenticated anti-rollback floor.
+/// Each successful commit replaces and disposes the previous execution, including the same generation.
 pub struct RemoteCoordinator {
     store: exact_update::Store,
     pending: Option<Candidate>,
-    active: Vec<Candidate>,
+    active: Option<Candidate>,
     revoked: Vec<Generation>,
 }
 
@@ -118,7 +119,7 @@ impl RemoteCoordinator {
         Self {
             store,
             pending: None,
-            active: Vec::new(),
+            active: None,
             revoked: Vec::new(),
         }
     }
@@ -211,7 +212,8 @@ impl RemoteCoordinator {
     }
 
     /// Execute only after the caller has presented its first pixel.
-    /// Failure consumes the preparation and leaves all active remotes unchanged.
+    /// Remote activation failure consumes the preparation. Validation failure leaves it available for abandonment.
+    /// Either failure leaves the committed execution unchanged.
     pub fn activate_after_first_pixel(
         &mut self,
         token: &RemotePreparation,
@@ -252,7 +254,9 @@ impl RemoteCoordinator {
         }
         let candidate = self.pending.take().ok_or("stale remote preparation")?;
         let handle = candidate.handle.clone();
-        self.active.push(candidate);
+        if let Some(mut previous) = self.active.replace(candidate) {
+            previous.remote.dispose();
+        }
         Ok(handle)
     }
 
@@ -269,18 +273,20 @@ impl RemoteCoordinator {
     }
 
     /// Revoke every execution incarnation of this complete generation.
+    /// Revocation lasts only for this coordinator. Reopening Store does not restore it.
     pub fn revoke(&mut self, generation: &Generation) {
         if !self.revoked.contains(generation) {
             self.revoked.push(generation.clone());
         }
-        self.active.retain_mut(|c| {
-            if &c.selection.generation == generation {
-                c.remote.dispose();
-                false
-            } else {
-                true
+        if self
+            .active
+            .as_ref()
+            .is_some_and(|c| &c.selection.generation == generation)
+        {
+            if let Some(mut candidate) = self.active.take() {
+                candidate.remote.dispose();
             }
-        });
+        }
         if let Some(c) = self.pending.as_mut() {
             if &c.selection.generation == generation {
                 c.remote.dispose();
@@ -311,8 +317,8 @@ impl RemoteCoordinator {
         }
         let c = self
             .active
-            .iter_mut()
-            .find(|c| std::rc::Rc::ptr_eq(&c.handle.0, &handle.0))
+            .as_mut()
+            .filter(|c| std::rc::Rc::ptr_eq(&c.handle.0, &handle.0))
             .ok_or("stale or foreign remote handle")?;
         if c.selection.generation != self.store.generation() {
             return Err("stale remote generation".into());
@@ -369,7 +375,7 @@ mod tests {
         }
     }
 
-    fn stage(store: &mut Store, seq: u64) -> PreparedSelection {
+    fn stage(owner: &mut RemoteCoordinator, seq: u64) -> PreparedSelection {
         let plan = include_bytes!("../../update/tests/it/fixtures/publisher/app.plan");
         let marker = seq.to_string().into_bytes();
         let head = serde_json::to_vec(&serde_json::json!({
@@ -383,7 +389,7 @@ mod tests {
             ]
         }))
         .unwrap();
-        let outcome = store.check(
+        let outcome = owner.check(
             "https://remote.test/exact.json",
             &mut |url| match url {
                 "https://remote.test/exact.json" => Ok(head.clone()),
@@ -395,7 +401,7 @@ mod tests {
             &mut |_| None,
         );
         assert!(matches!(outcome, Ok(Check::Staged { seq: found, .. }) if found == seq));
-        store.prepare_activation().unwrap().unwrap()
+        owner.store().prepare_activation().unwrap().unwrap()
     }
 
     fn source_plan() -> exact_plan::Plan {
@@ -403,13 +409,54 @@ mod tests {
     }
 
     #[test]
+    fn coordinator_disposes_replaced_realms_including_same_generation() {
+        let dir = Directory::new();
+        let mut owner = RemoteCoordinator::new(dir.store());
+        let plan = source_plan();
+        let mut previous = None;
+        for seq in 1..=3 {
+            let selected = stage(&mut owner, seq);
+            for _ in 0..2 {
+                let token = owner
+                    .prepare(&selected.generation, "remote.hbc", "test.pure", "", &plan)
+                    .unwrap();
+                assert!(owner.commit(&token).is_err());
+                if let Some((handle, watch)) = &previous {
+                    assert!(std::sync::Weak::upgrade(watch).is_some());
+                    assert!(owner.query(handle, "base64", &[]).is_ok());
+                }
+                let handle = owner.activate_after_first_pixel(&token).unwrap();
+                let module = owner
+                    .pending
+                    .as_ref()
+                    .unwrap()
+                    .remote
+                    .module
+                    .as_ref()
+                    .unwrap();
+                assert!(module.is_loaded());
+                // Both Module and its live engine own this watch. Its release proves both were dropped.
+                let watch = std::sync::Arc::downgrade(&module.watch);
+                owner.commit(&token).unwrap();
+                if let Some((old_handle, old_watch)) = previous.take() {
+                    assert!(old_watch.upgrade().is_none());
+                    assert!(owner.query(&old_handle, "base64", &[]).is_err());
+                }
+                assert!(watch.upgrade().is_some());
+                assert!(owner.query(&handle, "base64", &[]).is_ok());
+                previous = Some((handle, watch));
+            }
+        }
+        let (_, watch) = previous.unwrap();
+        owner.revoke(&owner.store().generation());
+        assert!(watch.upgrade().is_none());
+    }
+
+    #[test]
     fn coordinator_preserves_selection_on_refusal_and_commits_exact_generation() {
         let dir = Directory::new();
-        let mut store = dir.store();
-        store.hold_staged(true);
-        let first = stage(&mut store, 1);
-        store.commit_activation(&first.generation).unwrap();
-        let mut owner = RemoteCoordinator::new(store);
+        let mut owner = RemoteCoordinator::new(dir.store());
+        let first = stage(&mut owner, 1);
         let plan = source_plan();
         let first_token = owner
             .prepare(&first.generation, "remote.hbc", "test.pure", "", &plan)
@@ -417,7 +464,7 @@ mod tests {
         let first_handle = owner.activate_after_first_pixel(&first_token).unwrap();
         owner.commit(&first_token).unwrap();
         assert!(owner.commit(&first_token).is_err());
-        let second = stage(&mut owner.store, 2);
+        let second = stage(&mut owner, 2);
         assert!(owner
             .prepare(&first.generation, "remote.hbc", "test.pure", "", &plan)
             .is_err());
@@ -458,12 +505,12 @@ mod tests {
         assert!(owner.commit(&retry).is_err());
         assert!(owner.query(&first_handle, "base64", &[]).is_err());
         assert!(owner.query(&handle, "base64", &[]).is_ok());
-        let third = stage(&mut owner.store, 3);
+        let third = stage(&mut owner, 3);
         let stale = owner
             .prepare(&third.generation, "remote.hbc", "test.pure", "", &plan)
             .unwrap();
         let stale_handle = owner.activate_after_first_pixel(&stale).unwrap();
-        stage(&mut owner.store, 4);
+        stage(&mut owner, 4);
         assert!(owner.commit(&stale).is_err());
         assert!(owner.query(&stale_handle, "base64", &[]).is_err());
         assert_eq!(owner.store().generation(), second.generation);
@@ -489,8 +536,8 @@ mod tests {
         let b = Directory::new();
         let mut left = RemoteCoordinator::new(a.store());
         let mut right = RemoteCoordinator::new(b.store());
-        let one = stage(&mut left.store, 1);
-        stage(&mut right.store, 1);
+        let one = stage(&mut left, 1);
+        stage(&mut right, 1);
         let plan = source_plan();
         let token = left
             .prepare(&one.generation, "remote.hbc", "test.pure", "", &plan)
@@ -504,7 +551,7 @@ mod tests {
         right.revoke(&one.generation);
         assert!(right.activate_after_first_pixel(&foreign).is_err());
         right.abandon(&foreign).unwrap();
-        stage(&mut left.store, 2);
+        stage(&mut left, 2);
         assert!(left.activate_after_first_pixel(&token).is_err());
         assert!(left.commit(&token).is_err());
         left.abandon(&token).unwrap();
@@ -518,10 +565,15 @@ mod tests {
     fn admission_rejects_absent_missing_and_tampered_assets() {
         for missing in [false, true] {
             let dir = Directory::new();
-            let mut store = dir.store();
-            let selected = stage(&mut store, 1);
+            let mut owner = RemoteCoordinator::new(dir.store());
+            let selected = stage(&mut owner, 1);
             assert!(PreparedRemote::new(&selected.assets, "absent.hbc", "test.pure", "").is_err());
-            let path = store.staged().unwrap().assets_dir.join("remote.hbc");
+            let path = owner
+                .store()
+                .staged()
+                .unwrap()
+                .assets_dir
+                .join("remote.hbc");
             if missing {
                 std::fs::remove_file(path).unwrap();
             } else {
@@ -536,18 +588,23 @@ mod tests {
     #[test]
     fn admitted_remote_keeps_its_bytes_and_identity_across_store_activation() {
         let dir = Directory::new();
-        let mut store = dir.store();
-        let first = stage(&mut store, 1);
-        let first_path = store.staged().unwrap().assets_dir.join("remote.hbc");
+        let mut owner = RemoteCoordinator::new(dir.store());
+        let first = stage(&mut owner, 1);
+        let first_path = owner
+            .store()
+            .staged()
+            .unwrap()
+            .assets_dir
+            .join("remote.hbc");
         let mut remote = PreparedRemote::new(&first.assets, "remote.hbc", "test.pure", "").unwrap();
         assert_eq!(remote.generation(), &first.generation);
-        store.commit_activation(&first.generation).unwrap();
-        let second = stage(&mut store, 2);
+        owner.store.commit_activation(&first.generation).unwrap();
+        let second = stage(&mut owner, 2);
         let next = PreparedRemote::new(&second.assets, "remote.hbc", "test.pure", "").unwrap();
-        store.commit_activation(&second.generation).unwrap();
+        owner.store.commit_activation(&second.generation).unwrap();
         assert_eq!(next.generation(), &second.generation);
         assert_ne!(remote.generation(), next.generation());
-        assert_eq!(store.generation(), second.generation);
+        assert_eq!(owner.store().generation(), second.generation);
         std::fs::remove_file(first_path).unwrap();
         let plan = contract::compile("component App\n  resource base64 = base64() as shape string\n  view\n    text base64\n").unwrap();
         remote.bind(&plan).unwrap();
