@@ -6,7 +6,7 @@ import { publishSnapshot, readSiteConfig } from './index.mjs';
 
 // This boundary runs only after the build and all selected streams succeeded.
 export async function deploymentOutput({ opts, origin, app, failed = [], refused = [] }) {
-  if (!opts.yes || failed.length || refused.length || !opts.export) return undefined;
+  if (!opts.yes || failed.length || refused.some(row => row.kind !== 'binary') || !opts.export) return undefined;
   let site;
   if (opts.zephyrConfig) {
     const rel = relative(resolve(opts.export), resolve(opts.zephyrConfig));

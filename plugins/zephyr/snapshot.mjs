@@ -2,11 +2,15 @@ import { mkdirSync, mkdtempSync, writeFileSync, renameSync, rmSync } from 'node:
 import { resolve, dirname } from 'node:path';
 import { DirectoryOrigin, sha256, safeRelative, parseWebRoot, webRootPath, webReleasePath } from '../../scripts/origin.mjs';
 import { inspectHead } from '../../scripts/deploy.mjs';
+import { INSTALL_PUBLIC } from '../../scripts/install-page.mjs';
+
+const publicInstallFiles = new Set(INSTALL_PUBLIC.map(path => path.slice(1)));
 
 // Select public protocol objects, never copy an origin directory wholesale.
 export async function collectSnapshot(origin, app) {
   const files = new Map();
   function publicName(name) {
+    if (publicInstallFiles.has(name)) return;
     if (name.split('/').some(p => p.startsWith('.')) || /(?:\.map|\.pem|\.key|\.p12|\.pfx|\.p8|\.lock|\.rs|\.ts|\.contract)$/.test(name)
       || /(?:^|\/)(?:node_modules|target|src|package.json|bun.lock|Cargo.lock|AGENTS.md)(?:\/|$)/i.test(name)) throw new Error(`private public path: ${name}`);
   }
@@ -49,10 +53,11 @@ export async function collectSnapshot(origin, app) {
   }
   if (!files.has('index.html')) throw new Error('snapshot requires index.html');
   for (const channel of await origin.list('.exact', { includeHidden: true }) ?? []) {
-    if (['root', 'blobs'].includes(channel)) continue;
+    if (['root', 'blobs'].includes(channel) || publicInstallFiles.has(`.exact/${channel}`)) continue;
     for (const compatibilityId of await origin.list(`.exact/${channel}`, { includeHidden: true }) ?? []) {
       const stream = { channel, compatibilityId };
       const base = `.exact/${channel}/${compatibilityId}`;
+      if (publicInstallFiles.has(base)) continue;
       if (await origin.get(`${base}/exact.json`) === null) continue;
       await envelope(await add(`${base}/exact.json`), stream);
       for (const name of await origin.list(`${base}/releases`, { includeHidden: true }) ?? []) {

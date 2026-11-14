@@ -143,16 +143,27 @@ test('configured deploy output invokes pinned CLI and verifies bytes without con
     const { DirectoryOrigin } = await import('../../scripts/origin.mjs');
     const { deploymentOutput } = await import('./deploy-output.mjs');
     const f = fixture(), source = resolve(dir, 'origin'), config = resolve(dir, 'site.json');
+    const { INSTALL_PUBLIC } = await import('../../scripts/install-page.mjs');
+    const rootPath = '.exact/root/web/exact.json', root = JSON.parse(f.files.get(rootPath));
+    for (const path of INSTALL_PUBLIC) {
+      const name = path.slice(1), body = Buffer.from(name.endsWith('.json') ? '{}' : '<h1>Install</h1>');
+      root.files.push({ name, bytes: body.length, sha256: sha256(body), sourceSha256: sha256(body) });
+      f.files.set(`.exact/root/web/releases/${root.id}/${name}`, body);
+    }
+    f.files.set(rootPath, Buffer.from(JSON.stringify(root)));
+    f.files.set(`.exact/root/web/inventories/${root.id}.json`, f.files.get(rootPath));
     for (const [name, bytes] of f.files) {
       const path = resolve(source, name);
       fs.mkdirSync((await import('node:path')).dirname(path), { recursive: true });
       fs.writeFileSync(path, bytes);
     }
     fs.writeFileSync(config, JSON.stringify({ org: 'org', project: 'project', app: 'app' }));
-    const result = await deploymentOutput({ opts: { yes: true, export: resolve(dir, 'export'), zephyrConfig: config }, origin: new DirectoryOrigin(source), app: f.app });
+    const result = await deploymentOutput({ opts: { yes: true, export: resolve(dir, 'export'), zephyrConfig: config }, origin: new DirectoryOrigin(source), app: f.app,
+      refused: [{ kind: 'binary', reason: 'Initial host binary must be distributed separately' }] });
     expect(result.transport.verified).toBe(true);
     expect(result.transport.versionUrl).toBe('https://immutable.example/');
     expect(result.transport.promotionRequested).toBe(false);
+    for (const path of INSTALL_PUBLIC) expect(result.files.some(file => file.path === path.slice(1))).toBe(true);
     const invoked = JSON.parse(fs.readFileSync(capture));
     expect(invoked.args).toEqual(['--package=zephyr-cli@1.4.1', 'dlx', 'ze-cli', 'deploy', './dist', '--target', 'web']);
     expect(invoked.config).toContain('"appName":"app"');
@@ -189,6 +200,7 @@ test('failed deployment and dry run never invoke transport or create export outp
     const opts = { yes: true, export: resolve(dir, 'export'), zephyrConfig: resolve(dir, 'missing.json') };
     // Failed builds throw before this boundary. Failed stream publication also stops here.
     expect(await deploymentOutput({ opts, failed: ['build failed'] })).toBeUndefined();
+    expect(await deploymentOutput({ opts, refused: [{ kind: 'stream', reason: 'Incompatible cohort' }] })).toBeUndefined();
     expect(await deploymentOutput({ opts: { ...opts, yes: false } })).toBeUndefined();
     expect(fs.existsSync(capture)).toBe(false);
     expect(fs.existsSync(opts.export)).toBe(false);

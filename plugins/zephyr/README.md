@@ -75,3 +75,6 @@ Web publication now retains `.exact/root/web/inventories/<id>.json` for each gen
 The publisher writes this inventory after it verifies every payload. Export includes these completed generations and skips partial directories.
 Use a fresh retained origin for this lifecycle.
 Existing proof artifacts remain unchanged.
+
+An initial host binary can require separate distribution while its signed update bundle is safe to publish.
+That binary notice does not block export. A refused stream or a failed publication still blocks transport.
