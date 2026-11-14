@@ -16,7 +16,7 @@ export async function publishSnapshot({ origin, app, site, control, dryRun = fal
   } }) {
   const files = await collectSnapshot(origin, app);
   if (dryRun) return { dryRun: true, files: files.size };
-  if (process.env.ZE_ENV) throw new Error('Unset ZE_ENV before snapshot upload');
+  if (process.env.ZE_ENV || process.env.ZE_SECRET_TOKEN) throw new Error('Unset ZE_ENV and ZE_SECRET_TOKEN before snapshot upload');
   for (const key of ['org', 'project', 'app']) if (!/^[a-z0-9][a-z0-9-]*$/.test(site[key] ?? '')) throw new Error(`invalid site ${key}`);
   const before = await control.inspect(site);
   if (!before.identityMatches || !before.noAutomaticPromotion) throw new Error('Upload requires matching user identity and no automatic deployment rules');
@@ -40,6 +40,7 @@ export async function publishSnapshot({ origin, app, site, control, dryRun = fal
 }
 
 export async function cliUpload(files, site, uploadId) {
+  if (process.env.ZE_ENV || process.env.ZE_SECRET_TOKEN) throw new Error('Use the normal Zephyr user session without ZE_ENV or ZE_SECRET_TOKEN');
   const stage = mkdtempSync(resolve(tmpdir(), 'exact-zephyr-'));
   try {
     mkdirSync(resolve(stage, 'dist'));
