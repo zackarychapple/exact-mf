@@ -1,49 +1,75 @@
 # Zephyr transport for Exact
 
-Exact signs updates. Zephyr stores complete immutable public snapshots. No runtime imports this plugin.
+Exact signs updates. This plugin uploads complete public snapshots through normal Zephyr CLI authentication.
+No runtime imports Zephyr or this plugin.
 
-Build and stage an update with the normal command:
+Create a private site configuration outside the public output:
 
-```sh
-bun scripts/deploy.mjs <app> --origin /absolute/retained-origin --export /absolute/new-snapshot --yes
+```json
+{"org":"zackarychapple","project":"exact-plugin-lifecycle","app":"signed-updates"}
 ```
 
-Use the same retained origin for subsequent generations. Export requires a web root and authenticated native envelopes.
-The export includes all retained native envelopes and their separate referenced MF, Hermes, plan and asset blobs.
-It materializes the current web files at the root and retains previous web release directories.
-It excludes origin locks and unreferenced blobs. Keep the signing key outside the origin.
-Without `--yes`, deployment does not export or upload.
+Install pnpm and sign in through the CLI's normal user login. Then run:
 
-`publishSnapshot` in `index.mjs` accepts the retained `DirectoryOrigin`, resolved Exact app, site configuration and control-plane hooks.
-It validates the complete graph before invoking `cliUpload`. The default transport uses the supported `zephyr-cli@1.4.1` uploader.
-Install pnpm and authenticate its normal Zephyr user first. Do not use MCP credentials or operator tokens.
+```sh
+bun scripts/deploy.mjs <app> \
+  --origin /absolute/retained-origin \
+  --export /absolute/new-snapshot \
+  --zephyr-config /absolute/zephyr-site.json --yes --json
+```
 
-The caller implements these hooks through its supported authenticated Zephyr control plane:
+No JavaScript hook or control callback is required. Use the same retained origin for later generations.
+Use a new export directory for each deployment. Keep signing keys and site configuration outside the origin and export.
+Without `--yes`, Exact does not export or invoke the uploader.
+A failed build, refused stream or incomplete signed graph stops the workflow before upload.
 
-- `inspect(site)` returns `identityMatches`, `noAutomaticPromotion` and the observed environment `versionId` (null when absent).
-- `resolveBuild(site, receipt)` finds the exact uploaded build in history through its unique `exact-zephyr-upload-id.txt` marker. It returns `applicationUid`, `versionUrl` and `versionId`.
-- `promote(site, {versionId, expectedVersionId})` requests explicit promotion.
+The snapshot materializes the current web root and retains public native heads, release records and referenced blobs.
+Separate MF and Hermes blobs remain separate files. Exact verifies signatures, hashes and byte lengths before upload.
+The exporter omits locks, unreferenced blobs and private file types.
 
-`inspect` must check deployment rules and the CLI user before upload. Do not return constant approvals.
-Unset `ZE_ENV`. Disable automatic environment or tag rules for this upload app.
-The uploader can activate those rules before returning. The CLI 1.4.1 transport cannot undo automatic activation. The control-plane policy check must exclude it before upload.
-`promote: true` verifies every immutable file before requesting promotion. The stale-read check is not atomic compare-and-swap.
-The caller must verify stable content after promotion. `dryRun: true` performs no transport or control-plane writes.
+The included transport runs:
 
-Root's isolated live fixture uses org `zackarychapple`, project `exact-plugin-lifecycle`, app `signed-updates`, environment `exact-proof`.
-Its site ID is `2dee0599-4d8d-4e9a-b15d-27e1ff509850`.
-Use `site: {org: 'zackarychapple', project: 'exact-plugin-lifecycle', app: 'signed-updates', environment: 'exact-proof'}`.
-The CLI upload marker and application identity must match this site's build history before promotion. Existing proof sites need no changes.
+```sh
+ZE_FAIL_BUILD=true pnpm --package=zephyr-cli@1.4.1 dlx ze-cli deploy ./dist --target web
+```
 
-To connect the normal deploy command, provide a local module through `--transport /absolute/zephyr-transport.mjs`.
-Its default function receives `{origin, app, snapshot}` after successful publication and export.
-This `origin` reads the frozen export directory, so a concurrent retained-origin publish cannot change the upload.
-The module calls `publishSnapshot({origin, app, site, control, promote: true})` with the control hooks above.
-Exact does not load the hook during a dry run or after a failed build or refused stream.
-Keep this module and its account configuration outside the exported directory.
+It stages only the selected public files. The package and Zephyr configuration remain outside `dist`.
+The plugin uses the existing normal CLI user session. It does not read credentials or call private API endpoints.
+`ZE_SECRET_TOKEN` is refused. Normal deployment rules and an explicit ambient `ZE_ENV` retain their CLI behavior.
 
-Published CLI 1.4.1 has no structured deploy receipt. `resolveBuild` must inspect candidate immutable builds for `receipt.uploadId`.
-Do not choose the newest build without checking this marker. Verification checks the marker again with every other file.
+Published CLI 1.4.1 has no structured deploy receipt. Its pinned agent prints the immutable URL after
+“Deployed to Zephyr's edge in …ms.” The plugin requires one unambiguous completion URL.
+It checks the exact unique `exact-zephyr-upload-id.txt` marker at that URL, then compares every uploaded file.
+A different build with identical application bytes cannot pass the unique marker check.
+A missing blob that returns fallback HTML fails the byte comparison.
+
+The returned `transport` receipt includes `versionUrl`, `uploadId`, `verified` and `evidenceDirectory`.
+CLI stdout, stderr and attempt metadata remain in that private directory. Failed or ambiguous attempts also retain the staged public files.
+Verification success removes the temporary `dist` copy and writes `verified.json`. Original exports remain unchanged.
+Inspect evidence and build history before retrying an ambiguous upload. The plugin never retries an upload automatically.
+Evidence files can contain CLI authentication prompts. Keep the directory private and remove it when no longer needed.
+
+Zephyr can apply configured tag and environment rules after uploading assets, before the CLI returns.
+Local graph validation precedes upload. Immutable snapshot verification follows the CLI return.
+Normal upload cannot promise verification before those automatic rules run. Use an isolated app when that ordering matters.
+See [version URLs](https://docs.zephyr-cloud.io/features/versions) and [deployment rules](https://docs.zephyr-cloud.io/features/versioning-tags).
+
+For explicit manual promotion, optional `publishSnapshot` control hooks remain available:
+
+- `inspect(site)` returns `identityMatches` and the observed environment `versionId`.
+- `resolveBuild(site, receipt)` locates the exact marked build and returns its `versionId`, `applicationUid` and `versionUrl`.
+- `promote(site, {versionId, expectedVersionId})` requests promotion.
+
+`promote: true` verifies the marker and every file before calling `control.promote`.
+The observed-version check is not atomic compare-and-swap. Verify stable content after promotion.
+`strictPolicy: true` additionally requires real inspection of `noAutomaticPromotion` and refuses ambient `ZE_ENV`.
+Do not return constant policy approvals. This stronger mode requires caller-supplied inspection.
+
+A custom hook can still use `--transport /absolute/module.mjs` instead of `--zephyr-config`.
+Its default function receives `{origin, app, snapshot}`. The origin reads the frozen export directory.
+
+Root's isolated site is `2dee0599-4d8d-4e9a-b15d-27e1ff509850`, with environment `exact-proof`.
+Root owns live upload and any manual promotion. Existing proof artifacts remain unchanged.
 
 Web publication now retains `.exact/root/web/inventories/<id>.json` for each generation.
 The publisher writes this inventory after it verifies every payload. Export includes these completed generations and skips partial directories.

@@ -100,6 +100,105 @@ test('verified immutable snapshot permits explicit promotion', async () => {
   expect(promoted).toBe(true);
 });
 
+async function withFakeCli(run) {
+  const fs = await import('node:fs');
+  const { resolve, dirname } = await import('node:path');
+  const { tmpdir } = await import('node:os');
+  const dir = fs.mkdtempSync(resolve(tmpdir(), 'exact-cli-test-')), bin = resolve(dir, 'bin');
+  fs.mkdirSync(bin);
+  const capture = resolve(dir, 'invocation.json');
+  fs.writeFileSync(resolve(bin, 'pnpm'), `#!${process.execPath}
+import {writeFileSync,readFileSync} from 'node:fs';
+writeFileSync(process.env.EXACT_ZEPHYR_TEST_CAPTURE, JSON.stringify({cwd:process.cwd(),args:process.argv.slice(2),config:readFileSync('zephyr.config.mjs','utf8'),failBuild:process.env.ZE_FAIL_BUILD}));
+if(process.env.EXACT_ZEPHYR_TEST_MODE==='failure'){console.error('test uploader failed after accepting assets');process.exit(2);}
+console.log("Deployed to \\x1b[36mZephyr\\x1b[0m's edge in 12ms.\\n\\nhttps://immutable.example/");
+if(process.env.EXACT_ZEPHYR_TEST_MODE==='ambiguous')console.log("Deployed to Zephyr's edge in 13ms.\\n\\nhttps://other.example/");
+console.log('Updated 1 targets in 4ms\\n- https://stable.example/');
+`, { mode: 0o700 });
+  const before = { PATH: process.env.PATH, capture: process.env.EXACT_ZEPHYR_TEST_CAPTURE, mode: process.env.EXACT_ZEPHYR_TEST_MODE };
+  const oldFetch = globalThis.fetch;
+  process.env.PATH = `${dirname(process.execPath)}:${bin}:${before.PATH}`;
+  process.env.EXACT_ZEPHYR_TEST_CAPTURE = capture;
+  delete process.env.EXACT_ZEPHYR_TEST_MODE;
+  globalThis.fetch = async url => {
+    const invoked = JSON.parse(fs.readFileSync(capture, 'utf8'));
+    const path = new URL(url).pathname.slice(1);
+    if (process.env.EXACT_ZEPHYR_TEST_MODE === 'wrong-marker' && path === 'exact-zephyr-upload-id.txt') return new Response('another upload');
+    if (process.env.EXACT_ZEPHYR_TEST_MODE === 'tampered' && path === 'index.html') return new Response('HTML fallback');
+    return new Response(fs.readFileSync(resolve(invoked.cwd, 'dist', path)));
+  };
+  try { await run({ fs, resolve, dir, capture }); }
+  finally {
+    globalThis.fetch = oldFetch;
+    process.env.PATH = before.PATH;
+    for (const [key, value] of [['EXACT_ZEPHYR_TEST_CAPTURE', before.capture], ['EXACT_ZEPHYR_TEST_MODE', before.mode]]) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+test('configured deploy output invokes pinned CLI and verifies bytes without control hooks', async () => {
+  await withFakeCli(async ({ fs, resolve, dir, capture }) => {
+    const { DirectoryOrigin } = await import('../../scripts/origin.mjs');
+    const { deploymentOutput } = await import('./deploy-output.mjs');
+    const f = fixture(), source = resolve(dir, 'origin'), config = resolve(dir, 'site.json');
+    for (const [name, bytes] of f.files) {
+      const path = resolve(source, name);
+      fs.mkdirSync((await import('node:path')).dirname(path), { recursive: true });
+      fs.writeFileSync(path, bytes);
+    }
+    fs.writeFileSync(config, JSON.stringify({ org: 'org', project: 'project', app: 'app' }));
+    const result = await deploymentOutput({ opts: { yes: true, export: resolve(dir, 'export'), zephyrConfig: config }, origin: new DirectoryOrigin(source), app: f.app });
+    expect(result.transport.verified).toBe(true);
+    expect(result.transport.versionUrl).toBe('https://immutable.example/');
+    expect(result.transport.promotionRequested).toBe(false);
+    const invoked = JSON.parse(fs.readFileSync(capture));
+    expect(invoked.args).toEqual(['--package=zephyr-cli@1.4.1', 'dlx', 'ze-cli', 'deploy', './dist', '--target', 'web']);
+    expect(invoked.config).toContain('"appName":"app"');
+    expect(invoked.failBuild).toBe('true');
+    const evidence = result.transport.evidenceDirectory;
+    expect(fs.existsSync(resolve(evidence, 'verified.json'))).toBe(true);
+    expect(fs.existsSync(resolve(evidence, 'dist'))).toBe(false);
+    fs.rmSync(evidence, { recursive: true, force: true });
+  });
+});
+
+test('CLI failure, ambiguous receipt, wrong marker and corrupt file preserve evidence', async () => {
+  await withFakeCli(async ({ fs, resolve, capture }) => {
+    for (const mode of ['failure', 'ambiguous', 'wrong-marker', 'tampered']) {
+      process.env.EXACT_ZEPHYR_TEST_MODE = mode;
+      let failure;
+      try { await publishSnapshot({ ...fixture(), site: { org: 'org', project: 'project', app: 'app' } }); }
+      catch (error) { failure = error; }
+      expect(failure).toBeDefined();
+      expect(failure.message).toContain('upload evidence:');
+      const { cwd } = JSON.parse(fs.readFileSync(capture));
+      expect(fs.existsSync(resolve(cwd, 'dist/.exact/prod/cohort/exact.json'))).toBe(true);
+      expect(fs.existsSync(resolve(cwd, 'attempt.json'))).toBe(true);
+      if (mode === 'failure') expect(fs.readFileSync(resolve(cwd, 'stderr.log'), 'utf8')).toContain('test uploader failed');
+      expect(fs.existsSync(resolve(cwd, 'verified.json'))).toBe(false);
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+});
+
+test('failed deployment and dry run never invoke transport or create export output', async () => {
+  await withFakeCli(async ({ fs, resolve, dir, capture }) => {
+    const { deploymentOutput } = await import('./deploy-output.mjs');
+    const opts = { yes: true, export: resolve(dir, 'export'), zephyrConfig: resolve(dir, 'missing.json') };
+    // Failed builds throw before this boundary. Failed stream publication also stops here.
+    expect(await deploymentOutput({ opts, failed: ['build failed'] })).toBeUndefined();
+    expect(await deploymentOutput({ opts: { ...opts, yes: false } })).toBeUndefined();
+    expect(fs.existsSync(capture)).toBe(false);
+    expect(fs.existsSync(opts.export)).toBe(false);
+  });
+});
+
+test('strict policy remains optional and requires an actual inspector', async () => {
+  await expect(publishSnapshot({ ...fixture(), site: { org: 'org', project: 'project', app: 'app' }, strictPolicy: true })).rejects.toThrow('real control hooks');
+});
+
 test('an application cannot overwrite the transport marker', async () => {
   const f = fixture(), path = '.exact/root/web/exact.json';
   const root = JSON.parse(f.files.get(path)), bytes = Buffer.from('application content');
@@ -146,4 +245,33 @@ test('interrupted publication does not prevent export or discard completed gener
     expect(after.get(`.exact/root/web/releases/${first.root}/index.html`)).toEqual(before.get('index.html'));
     expect([...after.keys()].some(path => path.includes('/pending/'))).toBe(false);
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('normal deploy stops before CLI invocation when its compiler build fails', async () => {
+  await withFakeCli(async ({ fs, resolve, dir, capture }) => {
+    const { spawnSync } = await import('node:child_process');
+    const app = resolve(dir, 'app'), bin = resolve(dir, 'bin');
+    fs.mkdirSync(app);
+    fs.writeFileSync(resolve(app, 'app.contract'), 'component App\n  view\n    text "Test"\n');
+    fs.writeFileSync(resolve(app, 'app.json'), JSON.stringify({ name: 'Test', app: { id: 'test.failed-build', name: 'Test' }, host: { web: {} } }));
+    for (const args of [['init', '-q'], ['add', '.']]) {
+      expect(spawnSync('git', args, { cwd: app }).status).toBe(0);
+    }
+    // The publisher must stop on a toolchain failure, regardless of CLI availability.
+    const realCargo = Bun.which('cargo');
+    fs.writeFileSync(resolve(bin, 'cargo'), `#!${process.execPath}\nimport {spawnSync} from 'node:child_process';
+if(process.argv[2]==='build'){console.error('test compiler build failed');process.exit(19);}
+const result=spawnSync(${JSON.stringify(realCargo)},process.argv.slice(2),{stdio:'inherit'});process.exit(result.status??1);
+`, { mode: 0o700 });
+    const config = resolve(dir, 'site.json');
+    fs.writeFileSync(config, JSON.stringify({ org: 'org', project: 'project', app: 'app' }));
+    const result = spawnSync(process.execPath, [resolve(import.meta.dir, '../../scripts/deploy.mjs'), app,
+      '--dirty', '--yes', '--origin', resolve(dir, 'origin'), '--export', resolve(dir, 'export'), '--zephyr-config', config], {
+      cwd: resolve(import.meta.dir, '../..'), env: { ...process.env, EXACT_APP_DIR: app }, encoding: 'utf8',
+    });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain('test compiler build failed');
+    expect(fs.existsSync(capture)).toBe(false);
+    expect(fs.existsSync(resolve(dir, 'export'))).toBe(false);
+  });
 });

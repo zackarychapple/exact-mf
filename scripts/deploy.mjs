@@ -48,10 +48,10 @@ import { entryPlans, listBuildFiles, listPublicFiles, readStaticCandidate } from
 import { BESIDE, STAGE } from '../host/web/beside.mjs';
 const ROOT = resolve(new URL('..', import.meta.url).pathname);
 const PLATFORMS = ['web', 'ios', 'macos', 'linux'];
-const USAGE = 'usage: bun scripts/deploy.mjs <app> [--origin <dir|url>] [--channel <name>] [--only bundle|origin] [--platform <web|ios|macos|linux>]... [--snapshot <sha>] [--dirty] [--release <id>] [--keys <dir>] [--export <new-directory>] [--transport <module>] [--json] [--yes]\n       bun scripts/deploy.mjs keygen <id> [--keys <dir>] [--json]';
+const USAGE = 'usage: bun scripts/deploy.mjs <app> [--origin <dir|url>] [--channel <name>] [--only bundle|origin] [--platform <web|ios|macos|linux>]... [--snapshot <sha>] [--dirty] [--release <id>] [--keys <dir>] [--export <new-directory>] [--transport <module> | --zephyr-config <json>] [--json] [--yes]\n       bun scripts/deploy.mjs keygen <id> [--keys <dir>] [--json]';
 function parseArgs(argv) {
   const opts = { platform: [], _: [] };
-  const valued = new Set(['--origin', '--channel', '--only', '--platform', '--snapshot', '--release', '--keys', '--export', '--transport']);
+  const valued = new Set(['--origin', '--channel', '--only', '--platform', '--snapshot', '--release', '--keys', '--export', '--transport', '--zephyr-config']);
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--json') opts.json = true;
@@ -69,6 +69,10 @@ function parseArgs(argv) {
   for (const p of opts.platform) if (!PLATFORMS.includes(p)) refuse(`--platform ${p}: one of ${PLATFORMS.join(', ')}`);
   if (opts.only && opts.only !== 'bundle' && opts.only !== 'origin') refuse(`--only ${opts.only}: bundle or origin`);
   if (opts.release && !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(opts.release)) refuse(`--release ${opts.release}: start with a letter or digit, then use letters, digits, . _ - only (it names a directory and a file)`);
+  if (opts.zephyrConfig) {
+    if (opts.transport || !opts.export) refuse('--zephyr-config requires --export and excludes --transport');
+    opts.zephyrConfig = resolve(opts.zephyrConfig);
+  }
   if (opts.transport) {
     if (!opts.export) refuse('--transport requires --export');
     opts.transport = resolve(opts.transport);
@@ -1387,16 +1391,8 @@ async function deployCaptured(opts, capsule) {
       log(`  ${name}: failed — ${e.message}; ${e.headOutcomeUnknown ? 'the head outcome is unknown and must be inspected' : "this release's head is not visible"}`);
     }
   }
-  let exported;
-  if (opts.export && !failed.length && !refused.length) {
-    const { exportSnapshot } = await import('../plugins/zephyr/snapshot.mjs');
-    exported = await exportSnapshot(origin, app, opts.export);
-    if (opts.transport) {
-      const transport = await import((await import('node:url')).pathToFileURL(opts.transport).href);
-      if (typeof transport.default !== 'function') refuse('--transport module must export a default function');
-      exported.transport = await transport.default({ origin: openOrigin(exported.directory), app, snapshot: exported });
-    }
-  }
+  const { deploymentOutput } = await import('../plugins/zephyr/deploy-output.mjs');
+  const exported = await deploymentOutput({ opts, origin, app, failed, refused });
   const outcome = { ...table, dryRun: false, published, refused, failed, exported };
   if (opts.json) console.log(JSON.stringify(outcome));
   else {
