@@ -34,3 +34,9 @@ Root's isolated live fixture uses org `zackarychapple`, project `exact-plugin-li
 Its site ID is `2dee0599-4d8d-4e9a-b15d-27e1ff509850`.
 Use `site: {org: 'zackarychapple', project: 'exact-plugin-lifecycle', app: 'signed-updates', environment: 'exact-proof'}`.
 The CLI receipt must match this site's build history before promotion. Existing proof sites need no changes.
+
+To connect the normal deploy command, provide a local module through `--transport /absolute/zephyr-transport.mjs`.
+Its default function receives `{origin, app, snapshot}` after successful publication and export.
+The module calls `publishSnapshot({origin, app, site, control, promote: true})` with the control hooks above.
+Exact does not load the hook during a dry run or after a failed build or refused stream.
+Keep this module and its account configuration outside the exported directory.
