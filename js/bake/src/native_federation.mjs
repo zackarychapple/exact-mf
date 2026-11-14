@@ -1,9 +1,9 @@
 // Optional native artifact build. This module never loads package code in the build process.
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { dirname, isAbsolute, join, relative } from 'node:path';
 import { createHash } from 'node:crypto';
 import { build } from 'rolldown';
-import { parseSync } from 'rolldown/utils';
+import { parseSync, transformSync } from 'rolldown/utils';
 import { packageRefusals } from './typescript.mjs';
 
 const inputs = {
@@ -75,54 +75,134 @@ const inputs = {
  */
 export async function buildNativeFederation({ input, file }) {
   if (!input || !file) throw Error('native federation requires input and file');
-  const result = await build({ input, platform:'browser', plugins:[nativeFederation()],
-    transform:{define:{ENV_TARGET:'"native"','process.env.NODE_ENV':'"production"'}},
-    output:{format:'iife',codeSplitting:false} });
-  if (result.output.length!==1 || result.output[0].type!=='chunk') throw Error('native federation requires one JavaScript artifact');
-  const code=result.output[0].code;
-  const errors=packageRefusals(code, at=>`native federation${at}`, (s,o)=>parseSync('native.js',s,o));
+  const result = await build({
+    input, write: false, platform: 'browser', plugins: [nativeFederation()],
+    transform: { define: { 'process.env.NODE_ENV': '"production"' } },
+    output: { format: 'iife', codeSplitting: false }
+  });
+  if (result.output.length !== 1 || result.output[0].type !== 'chunk')
+    throw Error('native federation requires one JavaScript artifact');
+  const code = result.output[0].code;
+  const errors = packageRefusals(code, at => `native federation${at}`, (s, o) => parseSync('native.js', s, o));
   if (errors.length) throw Error(errors.join('\n'));
-  const { writeFileSync }=await import('node:fs');
-  writeFileSync(file,code);
+  writeFileSync(file, code);
+}
+
+const packageName = /^@module-federation\/(runtime-core|sdk|error-codes)$/;
+const packageImport = /^(@module-federation\/(?:runtime-core|sdk|error-codes))(?:\/|$)/;
+
+function nearestPackage(id) {
+  if (!isAbsolute(id)) return null;
+  for (let root = dirname(id); ; root = dirname(root)) {
+    const path = join(root, 'package.json');
+    if (existsSync(path)) return { root, manifest: JSON.parse(readFileSync(path, 'utf8')) };
+    if (dirname(root) === root) return null;
+  }
+}
+
+function verifyPackage(root, name) {
+  const manifest = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
+  if (manifest.name !== name || manifest.version !== '2.9.3')
+    throw Error('unsupported native federation version: ' + manifest.name + '@' + manifest.version);
+}
+
+function within(root, id) {
+  if (!isAbsolute(id)) return false;
+  const path = relative(root, id).replaceAll('\\', '/');
+  return path !== '..' && !path.startsWith('../') && !isAbsolute(path);
+}
+
+function ownerOf(roots, id) {
+  return [...roots].filter(([root]) => within(root, id))
+    .sort(([a], [b]) => b.length - a.length)[0];
 }
 
 /** Exact 2.9.3 specialization. Every reached MF file must match its reviewed bytes. */
 export function nativeFederation() {
- let reached=false;
- return {name:'exact-native-federation', transform(code,id){
- const match=id.replaceAll('\\','/').match(/\/@module-federation\/(runtime-core|sdk|error-codes)\/(.*)$/);
- if (!match) return null;
- const key=match[1]+'/'+match[2];
- const digest=createHash('sha256').update(code).digest('hex');
- if (inputs[key]!==digest) throw Error('unsupported native federation input: '+key);
- const root=id.slice(0,id.length-match[2].length);
- const manifest=JSON.parse(readFileSync(join(root,'package.json'),'utf8'));
- if(manifest.version!=='2.9.3' || manifest.name!=='@module-federation/'+match[1]) throw Error('unsupported native federation version: '+manifest.name+'@'+manifest.version);
- if(match[1]==='runtime-core') reached=true;
- if(id.endsWith('/sdk/dist/node.js')) return 'export function createScriptNode(){throw Error("Native script loading unavailable");} export function loadScriptNode(){throw Error("Native script loading unavailable");}';
- if(id.endsWith('/runtime-core/dist/remote/index.js')) { const line='if (isBrowserEnvValue && typeof window !== "undefined" && !remote.entry.startsWith("http")) remote.entry = new URL(remote.entry, window.location.origin).href;'; if(!code.includes(line))throw Error('URL seam changed'); code=code.replace(line,''); }
- const names=id.endsWith('/runtime-core/dist/utils/load.js')?['loadEsmEntry','loadSystemJsEntry','loadEntryNode','loadEntryDom']:id.endsWith('/sdk/dist/utils.js')?['getResourceUrl']:[];
- if(id.endsWith('/sdk/dist/dom.js')) names.push('createScript','createLink','loadScript');
- if(id.endsWith('/sdk/dist/node.js')) names.push('importNodeModule');
- if(id.endsWith('/runtime-core/dist/utils/preload.js')) names.push('waitForLinkPreload','waitForScriptPreload');
- if(id.endsWith('/sdk/dist/env.js')) names.push('isBrowserDebug');
- if(id.endsWith('/runtime-core/dist/global.js')) {
- const start=code.indexOf('const nativeGlobal ='); const end=code.indexOf('const Global =',start);
- if(start<0||end<0)throw Error('global seam changed');
- code=code.replace('const CurrentGlobal = typeof globalThis === "object" ? globalThis : window;', 'const CurrentGlobal = globalThis;');
- code=code.slice(0,code.indexOf('const nativeGlobal ='))+'const nativeGlobal = globalThis;\n'+code.slice(code.indexOf('const Global ='));
- }
- if(id.endsWith('/runtime-core/dist/plugins/generate-preload-assets.js')) {
- const start=code.indexOf('const isExisted ='); const end=code.indexOf('};',start);
- if(start<0||end<0)throw Error('preload seam changed');
- code=code.slice(0,start)+'const isExisted = () => {throw Error("Native preload unavailable");};'+code.slice(end+2);
- }
- if(!names.length) return code;
- const ast=parseSync(id,code).program;
- const edits=ast.body.filter(n=>n.type==='FunctionDeclaration' && names.includes(n.id.name));
- if(edits.length!==names.length)throw Error('transform shape changed: '+id);
- for(const n of edits.reverse()) code=code.slice(0,n.start)+`${n.async?'async ':''}function ${n.id.name}(){ ${n.id.name==='isBrowserDebug'?'return false;':"throw Error('Unsupported native fallback: "+n.id.name+"');"} }`+code.slice(n.end);
- return code;
+  let reached = false;
+  const roots = new Map();
+  return {
+    name: 'exact-native-federation',
+    buildStart() {
+      reached = false;
+      roots.clear();
+    },
+    async resolveId(source, importer) {
+      const name = packageImport.exec(source)?.[1];
+      const parent = importer && ownerOf(roots, importer);
+      if (!name && !(parent && source.startsWith('.'))) return null;
+      const resolved = await this.resolve(source, importer, { skipSelf: true });
+      if (!name) {
+        if (!resolved || resolved.external || !within(parent[0], resolved.id))
+          throw Error('unsupported native federation path: ' + source);
+        return resolved;
+      }
+      const owner = resolved && !resolved.external && nearestPackage(resolved.id);
+      if (!owner) throw Error('native federation package has no manifest: ' + source);
+      verifyPackage(owner.root, name);
+      roots.set(owner.root, name);
+      return resolved;
+    },
+    transform(code, id) {
+      const nearest = nearestPackage(id);
+      if (nearest && packageName.test(nearest.manifest.name))
+        roots.set(nearest.root, nearest.manifest.name);
+      // Keep the package identity even if a nested manifest changes its claimed name.
+      const owner = ownerOf(roots, id);
+      if (!owner) return null;
+      const [root, name] = owner;
+      verifyPackage(root, name);
+      const key = name.slice('@module-federation/'.length) + '/' + relative(root, id).replaceAll('\\', '/');
+      const digest = createHash('sha256').update(code).digest('hex');
+      if (inputs[key] !== digest) throw Error('unsupported native federation input: ' + key);
+      if (name === '@module-federation/runtime-core') reached = true;
+      const result = transformSync(id, specialize(code, key), { define: { ENV_TARGET: '"native"' } });
+      if (result.errors.length) throw Error('native federation transform failed: ' + key);
+      return result.code;
+    },
+    buildEnd(error) {
+      if (!error && !reached) throw Error('native federation input does not reach runtime-core');
+    }
+  };
+}
 
- }, buildEnd(error) { if(!error && !reached) throw Error('native federation input does not reach runtime-core'); }};
+function specialize(code, key) {
+  if (key === 'sdk/dist/node.js')
+    return 'export function createScriptNode(){throw Error("Native script loading unavailable");} export function loadScriptNode(){throw Error("Native script loading unavailable");}';
+  if (key === 'runtime-core/dist/remote/index.js') {
+    const line = 'if (isBrowserEnvValue && typeof window !== "undefined" && !remote.entry.startsWith("http")) remote.entry = new URL(remote.entry, window.location.origin).href;';
+    if (!code.includes(line)) throw Error('URL seam changed');
+    code = code.replace(line, '');
+  }
+  if (key === 'runtime-core/dist/global.js') {
+    const current = 'const CurrentGlobal = typeof globalThis === "object" ? globalThis : window;';
+    if (!code.includes(current)) throw Error('global seam changed');
+    code = code.replace(current, 'const CurrentGlobal = globalThis;');
+    const start = code.indexOf('const nativeGlobal =');
+    const end = code.indexOf('const Global =', start);
+    if (start < 0 || end < 0) throw Error('global seam changed');
+    code = code.slice(0, start) + 'const nativeGlobal = globalThis;\n' + code.slice(end);
+  }
+  if (key === 'runtime-core/dist/plugins/generate-preload-assets.js') {
+    const start = code.indexOf('const isExisted =');
+    const end = code.indexOf('};', start);
+    if (start < 0 || end < 0) throw Error('preload seam changed');
+    code = code.slice(0, start) + 'const isExisted = () => {throw Error("Native preload unavailable");};' + code.slice(end + 2);
+  }
+  const names = {
+    'runtime-core/dist/utils/load.js': ['loadEsmEntry', 'loadSystemJsEntry', 'loadEntryNode', 'loadEntryDom'],
+    'sdk/dist/utils.js': ['getResourceUrl'],
+    'sdk/dist/dom.js': ['createScript', 'createLink', 'loadScript'],
+    'runtime-core/dist/utils/preload.js': ['waitForLinkPreload', 'waitForScriptPreload'],
+    'sdk/dist/env.js': ['isBrowserDebug']
+  }[key];
+  if (!names) return code;
+  const ast = parseSync(key, code).program;
+  const edits = ast.body.filter(n => n.type === 'FunctionDeclaration' && names.includes(n.id.name));
+  if (edits.length !== names.length) throw Error('transform shape changed: ' + key);
+  for (const n of edits.reverse()) {
+    const body = n.id.name === 'isBrowserDebug' ? 'return false;' : `throw Error('Unsupported native fallback: ${n.id.name}');`;
+    code = code.slice(0, n.start) + `${n.async ? 'async ' : ''}function ${n.id.name}(){ ${body} }` + code.slice(n.end);
+  }
+  return code;
 }

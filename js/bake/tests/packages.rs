@@ -596,6 +596,7 @@ fn native_federation_runs_upstream_init_get_and_factory() {
     app.put("package.json", r#"{"private":true,"dependencies":{"@module-federation/runtime-core":"2.9.3","@module-federation/sdk":"2.9.3","@module-federation/error-codes":"2.9.3"}}"#);
     let install = exact_bake::bun()
         .arg("install")
+        .arg("--ignore-scripts")
         .current_dir(&app.0)
         .output()
         .unwrap();
@@ -613,23 +614,32 @@ const host=new ModuleFederation({name:'exact-test',remotes:[],plugins:[{
  };}
 }]});
 globalThis.mfMessage=async ()=>{host.registerRemotes([{name:'remote',entry:'prepared'}]);
- const result=await host.loadRemote('remote/value');return result.value+':'+calls.join(',');};
+ const result=await host.loadRemote('remote/value');return result.value+':'+calls.join(',')+':'+typeof ENV_TARGET;};
 "#);
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let built = exact_bake::bun().args(["-e", r#"
 import assert from 'node:assert/strict';
-import {readFileSync,writeFileSync} from 'node:fs';
+import {readFileSync,writeFileSync,mkdirSync,readdirSync,renameSync,symlinkSync,unlinkSync} from 'node:fs';
 import {build} from 'rolldown';
 import {parseSync} from 'rolldown/utils';
 const [root,app]=process.argv.slice(1);
 const {buildNativeFederation,nativeFederation}=await import(root+'/js/bake/src/native_federation.mjs');
 const {packageRefusals}=await import(root+'/js/bake/src/typescript.mjs');
 const input=app+'/entry.mjs',file=app+'/mf.js';
+const work=app+'/output-work';mkdirSync(work);process.chdir(work);
 await buildNativeFederation({input,file});
 const first=readFileSync(file,'utf8');
 await buildNativeFederation({input,file});
 assert.equal(readFileSync(file,'utf8'),first);
-const stock=await build({input,platform:'browser',transform:{define:{ENV_TARGET:'"native"','process.env.NODE_ENV':'"production"'}},output:{format:'iife',codeSplitting:false}});
+assert.deepEqual(readdirSync(work),[],'build must write only the requested artifact');
+const entry=readFileSync(input,'utf8');
+try {
+ writeFileSync(input,entry+'\nglobalThis.unsupported = document.body;');
+ await assert.rejects(buildNativeFederation({input,file}),/document/);
+ assert.equal(readFileSync(file,'utf8'),first,'refusal must preserve the previous artifact');
+ assert.deepEqual(readdirSync(work),[],'refusal must leave no unguarded output');
+} finally {writeFileSync(input,entry);}
+const stock=await build({input,write:false,platform:'browser',transform:{define:{ENV_TARGET:'"native"','process.env.NODE_ENV':'"production"'}},output:{format:'iife',codeSplitting:false}});
 assert.ok(packageRefusals(stock.output[0].code,x=>x,(s,o)=>parseSync('stock.js',s,o)).length>0);
 const id=app+'/node_modules/@module-federation/sdk/dist/dom.js';
 assert.throws(()=>nativeFederation().transform(readFileSync(id,'utf8')+'\n',id),/unsupported native federation input/);
@@ -638,6 +648,38 @@ const original=readFileSync(manifest,'utf8');
 try {writeFileSync(manifest,original.replace('"2.9.3"','"2.9.4"'));
  assert.throws(()=>nativeFederation().transform(readFileSync(id,'utf8'),id),/unsupported native federation version/);
 } finally {writeFileSync(manifest,original);}
+const sdk=app+'/node_modules/@module-federation/sdk',linked=app+'/vendor-sdk';
+renameSync(sdk,linked);symlinkSync(linked,sdk,process.platform==='win32'?'junction':'dir');
+await buildNativeFederation({input,file});
+const linkedOutput=readFileSync(file,'utf8');
+const sdkEntry=linked+'/dist/index.js',sdkCode=readFileSync(sdkEntry,'utf8');
+try {
+ writeFileSync(sdkEntry,sdkCode+'\nglobalThis.unreviewedSDK = true;');
+ await assert.rejects(buildNativeFederation({input,file}),/unsupported native federation input/);
+ assert.equal(readFileSync(file,'utf8'),linkedOutput);
+ assert.deepEqual(readdirSync(work),[]);
+} finally {writeFileSync(sdkEntry,sdkCode);}
+const utility=linked+'/dist/utils.js',escaped=app+'/sdk-utils.js';
+renameSync(utility,escaped);symlinkSync(escaped,utility,'file');
+try {
+ await assert.rejects(buildNativeFederation({input,file}),/unsupported native federation path/);
+ assert.equal(readFileSync(file,'utf8'),linkedOutput);
+} finally {unlinkSync(utility);renameSync(escaped,utility);}
+try {
+ writeFileSync(manifest,original.replace('"@module-federation/sdk"','"unrelated-sdk"'));
+ await assert.rejects(buildNativeFederation({input,file}),/unsupported native federation version/);
+} finally {writeFileSync(manifest,original);}
+const nested=linked+'/dist/package.json';
+try {
+ writeFileSync(nested,JSON.stringify({name:'unrelated-sdk',version:'2.9.3'}));
+ await assert.rejects(buildNativeFederation({input,file}),/unsupported native federation version/);
+} finally {unlinkSync(nested);}
+const reused=nativeFederation();
+const options={input,write:false,platform:'browser',plugins:[reused],
+ transform:{define:{'process.env.NODE_ENV':'"production"'}},output:{format:'iife',codeSplitting:false}};
+await build(options);
+const unrelated=app+'/unrelated.mjs';writeFileSync(unrelated,'globalThis.unrelated = 1;');
+await assert.rejects(build({...options,input:unrelated}),/does not reach runtime-core/);
 "#]).arg(root.canonicalize().unwrap()).arg(&app.0).current_dir(&root).output().unwrap();
     assert!(
         built.status.success(),
@@ -651,7 +693,7 @@ try {writeFileSync(manifest,original.replace('"2.9.3"','"2.9.4"'));
     if exact_js::ENGINE_LINKED {
         assert_eq!(
             message(&app),
-            Value::str("upstream:init,get:./value,factory")
+            Value::str("upstream:init,get:./value,factory:undefined")
         );
     } else {
         panic!("native MF qualification requires the linked Hermes executor");
