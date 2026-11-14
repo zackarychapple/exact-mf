@@ -6,6 +6,14 @@ The host starts with a neutral loading plan. After its first draw, it polls the 
 `RemoteCoordinator` admits the signed generation. Upstream MF calls `init`, `get`, and the factory through the native bridge.
 The bridge checks remote release metadata against signed assets and the admitted plan digest.
 `ExactComposition.applyGeneration` mounts the downloaded plan and commits the matching generation token.
+The host explicitly calls `Store::follow_environment` with the configured HTTPS head URL.
+This policy trusts that environment to select any valid signed release at or above the embedded minimum.
+Signed bytes establish release authenticity. They do not provide fresh signed promotion authorization.
+Mutable environment selection has no anti-replay protection.
+The store retains its maximum sequence floor and durable admitted sequence identities.
+A different signed digest for a recorded sequence is refused, including after restart.
+Existing stores seed this history from the retained maximum sequence. Previously collected lower-sequence identities cannot be recovered.
+The default Exact policy still refuses releases below its retained floor.
 The host does not choose a design from a version number. Neither remote plan is bundled in the host.
 
 The blue editorial panel is `remotes/v1.contract`. The orange welcome layout is `remotes/v2.contract`.
@@ -14,7 +22,7 @@ The session identity remains constant for the controller lifetime. Mount records
 
 ## Dependencies
 
-Use Bun 1.4.2 and Exact commit `c48c1a39b55862520458a23e020d5bf84dbac12c` at `/Users/zackarychapple/code/t3/exact`.
+Use Bun 1.4.2 and Exact commit `cbb3ae319bd761d4e3d339b464e7a420b0c6383a` at `/Users/zackarychapple/code/t3/exact`.
 Cargo manifests currently reference that checkout by path. The generated plans use format 5.
 The old format 4 proof and its `/tmp` evidence remain unchanged.
 The native MF artifact uses Exact's maintained `buildNativeFederation` API. The Bun lock pins all three upstream packages to 2.9.3.
@@ -39,13 +47,14 @@ The app writes update storage and mount evidence inside Application Support/Exac
 No private signing key enters the app or publication snapshots.
 
 The focused test uses local bytes behind an HTTPS fixture URL. It exercises production signature admission, real MF execution,
-remote metadata, distinct plan and entry digests, unchanged-generation skips, commit, and rollback rejection.
+remote metadata, distinct plan and entry digests, unchanged-generation skips, commit, and repeated v1/v2 transitions.
 It does not prove live HTTPS availability or device rendering.
 
 ## Publication and recording
 
 `deployment.json` records the Zephyr site identifiers. Its hostname is provisional until root verifies it.
-Root owns upload, stable promotion, device installation, and recording. Publish v1 before the first launch of a fresh app sandbox.
-Promote v2 while the app remains open. Sequence rollback is intentionally refused.
-A reused sandbox that admitted sequence 2 cannot return to sequence 1.
+Root owns upload, stable promotion, device installation, and recording.
+Select Zephyr build 18845 (v1) or 18846 (v2) on the stable environment while the app remains open.
+The opt-in policy permits repeated transitions in either direction, including a sandbox that already selected sequence 2.
+The predecessor remains active until the native owner accepts the complete candidate and commits its generation token.
 The runtime does not require any `/tmp` file.

@@ -80,10 +80,14 @@ fn initialize() -> Result<(), String> {
             embedded_assets: None,
             entry_digest: None,
         };
-        *u.borrow_mut() = Some(RemoteCoordinator::new(Store::open(
-            &PathBuf::from(root()).join("store"),
-            embedded,
-        )?));
+        let mut store = Store::open(&PathBuf::from(root()).join("store"), embedded)?;
+        #[cfg(not(test))]
+        let origin = fs::read_to_string(resource("origin.txt")).map_err(|e| e.to_string())?;
+        #[cfg(not(test))]
+        store.follow_environment(&format!("{}/.exact/demo/visual-remote-v1/exact.json", origin.trim().trim_end_matches('/')))?;
+        #[cfg(test)]
+        store.follow_environment("https://fixture.invalid/v1/.exact/demo/visual-remote-v1/exact.json")?;
+        *u.borrow_mut() = Some(RemoteCoordinator::new(store));
         Ok(())
     })
 }
@@ -503,7 +507,12 @@ mod tests {
         assert_ne!(a["entry"], b["entry"]);
         assert_ne!(a["planDigest"], b["planDigest"]);
         assert!(joined_finish(b["token"].as_u64().unwrap(), 1));
-        assert!(call(1)["error"].is_string());
+        for seq in [1, 2, 1, 2] {
+            let value = call(seq);
+            assert!(value.get("error").is_none(), "{value}");
+            assert_eq!(value["seq"], seq);
+            assert!(joined_finish(value["token"].as_u64().unwrap(), 1));
+        }
         assert_eq!(call(2)["current"], true);
     }
 }
