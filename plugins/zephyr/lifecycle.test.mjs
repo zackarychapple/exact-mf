@@ -54,3 +54,30 @@ test('dry run makes no calls; wrong identity and failed verification never promo
   await expect(publishSnapshot(args)).rejects.toThrow('identity');
   expect(promotions).toBe(0);
 });
+
+test('directory export materializes the browser root and excludes locks and unreferenced private blobs', async () => {
+  const { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { resolve, dirname } = await import('node:path');
+  const { DirectoryOrigin } = await import('../../scripts/origin.mjs');
+  const { exportSnapshot } = await import('./snapshot.mjs');
+  const f = fixture(), dir = mkdtempSync(resolve(tmpdir(), 'exact-zephyr-test-'));
+  try {
+    const source = resolve(dir, 'origin');
+    for (const [path, bytes] of f.files) {
+      const dest = resolve(source, path);
+      mkdirSync(dirname(dest), { recursive: true });
+      writeFileSync(dest, bytes);
+    }
+    writeFileSync(resolve(source, '.exact/prod/cohort/.lock'), 'private lock');
+    writeFileSync(resolve(source, '.exact/blobs/unreferenced'), 'private input');
+    const output = resolve(dir, 'snapshot');
+    await exportSnapshot(new DirectoryOrigin(source), f.app, output);
+    expect(readFileSync(resolve(output, 'index.html'), 'utf8')).toBe('<h1>Exact</h1>');
+    expect(existsSync(resolve(output, `.exact/blobs/${sha256(f.old)}`))).toBe(true);
+    expect(existsSync(resolve(output, '.exact/prod/cohort/.lock'))).toBe(false);
+    expect(existsSync(resolve(output, '.exact/blobs/unreferenced'))).toBe(false);
+    await expect(exportSnapshot(new DirectoryOrigin(source), f.app, output)).rejects.toThrow();
+    expect(readFileSync(resolve(output, 'index.html'), 'utf8')).toBe('<h1>Exact</h1>');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
