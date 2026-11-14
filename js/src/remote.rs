@@ -575,7 +575,7 @@ mod tests {
     }
 
     #[test]
-    fn coordinator_disposes_replaced_realms_including_same_generation() {
+    fn coordinator_disposes_replaced_abandoned_and_failed_realms() {
         let dir = Directory::new();
         let mut owner = RemoteCoordinator::new(dir.store());
         let plan = source_plan();
@@ -613,7 +613,55 @@ mod tests {
                 previous = Some((handle, watch));
             }
         }
-        let (_, watch) = previous.unwrap();
+        let (current, watch) = previous.unwrap();
+        let generation = owner.store().generation();
+        let selected = stage(&mut owner, 4);
+        let token = owner
+            .prepare(&selected.generation, "remote.hbc", "test.pure", "", &plan)
+            .unwrap();
+        let abandoned = owner.activate_after_first_pixel(&token).unwrap();
+        let abandoned_watch = std::sync::Arc::downgrade(
+            &owner
+                .pending
+                .as_ref()
+                .unwrap()
+                .remote
+                .module
+                .as_ref()
+                .unwrap()
+                .watch,
+        );
+        let selected = stage(&mut owner, 5);
+        assert!(owner.commit(&token).is_err());
+        assert!(abandoned_watch.upgrade().is_some());
+        assert!(owner.query(&abandoned, "base64", &[]).is_err());
+        owner.abandon(&token).unwrap();
+        assert!(abandoned_watch.upgrade().is_none());
+        assert!(owner.query(&abandoned, "base64", &[]).is_err());
+        assert_eq!(owner.store().generation(), generation);
+        assert!(watch.upgrade().is_some());
+        assert!(owner.query(&current, "base64", &[]).is_ok());
+
+        let failed = owner
+            .prepare(&selected.generation, "remote.hbc", "wrong", "", &plan)
+            .unwrap();
+        let failed_watch = std::sync::Arc::downgrade(
+            &owner
+                .pending
+                .as_ref()
+                .unwrap()
+                .remote
+                .module
+                .as_ref()
+                .unwrap()
+                .watch,
+        );
+        assert!(owner.activate_after_first_pixel(&failed).is_err());
+        assert!(failed_watch.upgrade().is_none());
+        assert!(owner.commit(&failed).is_err());
+        assert_eq!(owner.store().generation(), generation);
+        assert!(watch.upgrade().is_some());
+        assert!(owner.query(&current, "base64", &[]).is_ok());
         owner.revoke(&owner.store().generation());
         assert!(watch.upgrade().is_none());
     }
