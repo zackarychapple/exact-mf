@@ -20,6 +20,31 @@ The blue editorial panel is `remotes/v1.contract`. The orange welcome layout is 
 The diagnostic area shows the remote release, verified sequence, entry digest, plan digest, and host session identity.
 The session identity remains constant for the controller lifetime. Mount records also contain the process ID.
 
+## Source layout
+
+This repository has two branches:
+
+- [`main`](https://github.com/zackarychapple/exact-mf/tree/main) contains this example, the native bridge, and remote sources.
+- [`exact-runtime`](https://github.com/zackarychapple/exact-mf/tree/exact-runtime) contains the pinned Exact checkout and its integration changes.
+
+The [Zephyr plugin](https://github.com/zackarychapple/exact-mf/tree/exact-runtime/plugins/zephyr) includes source, lifecycle tests, and publication instructions.
+The [native MF builder](https://github.com/zackarychapple/exact-mf/blob/exact-runtime/js/bake/src/native_federation.mjs) specializes upstream Module Federation for Hermes.
+The [remote coordinator](https://github.com/zackarychapple/exact-mf/blob/exact-runtime/js/src/remote.rs) controls verified remote execution and activation.
+The plugin remains inside Exact because it imports Exact's build and publication modules.
+
+Clone the branches into separate directories:
+
+```sh
+git clone --branch main https://github.com/zackarychapple/exact-mf.git exact-mf
+git clone --branch exact-runtime https://github.com/zackarychapple/exact-mf.git exact-runtime
+git -C exact-runtime checkout "$(cat exact-mf/EXACT_REVISION)"
+```
+
+The checked-in Cargo paths currently name the original development checkout shown below.
+For another directory, update those paths in the root, native, tools, and validation manifests.
+Set `EXACT2` to the runtime directory for the Bun build scripts.
+Setting `EXACT2` alone does not change Cargo dependency paths.
+
 ## Dependencies
 
 Use Bun 1.4.2 and Exact commit `cbb3ae319bd761d4e3d339b464e7a420b0c6383a` at `/Users/zackarychapple/code/t3/exact`.
