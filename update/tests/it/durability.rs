@@ -5,6 +5,130 @@
 use crate::support::*;
 use exact_update::Check;
 
+#[test]
+#[ignore = "full signed admission-history qualification; writes 8192 durable generations"]
+#[cfg_attr(windows, ignore = "Windows durable store is not qualified")]
+fn signed_history_reaches_capacity_without_losing_restart_or_rollback_identity() {
+    use ed25519_dalek::SigningKey;
+    use exact_update::Store;
+    let temp = Temp::new("signed-history-capacity");
+    let key = SigningKey::from_bytes(&[73; 32]);
+    let baked = embedded(&[("test", key.verifying_key().to_bytes())]);
+    let bundle = |seq, bytes: &[u8]| {
+        let mut b = Bundle::new(seq, bytes);
+        b.signer = Some(("test".into(), key.clone()));
+        b
+    };
+    let started = std::time::Instant::now();
+    let mut store = Store::open(temp.path(), baked.clone()).unwrap();
+    for seq in 4..8196 {
+        Origin::of(&bundle(seq, b"plan")).check(&mut store).unwrap();
+    }
+    let path = temp.path().join("record.json");
+    let bytes = std::fs::metadata(&path).unwrap().len();
+    assert!(bytes < 1024 * 1024);
+    let mut origin = Origin::of(&bundle(8196, b"plan"));
+    assert!(origin
+        .check(&mut store)
+        .unwrap_err()
+        .contains("history is full"));
+    assert_eq!(origin.asked.len(), 1);
+    drop(store);
+    let reopening = std::time::Instant::now();
+    let mut store = Store::open(temp.path(), baked.clone()).unwrap();
+    eprintln!(
+        "8192 signed generations: {:?}; record {bytes} bytes; reopen {:?}",
+        started.elapsed(),
+        reopening.elapsed()
+    );
+    assert_eq!(store.select().seq, 8195);
+    let head = exact_update::head_url(ORIGIN, "release", COHORT);
+    store.follow_environment(&head).unwrap();
+    Origin::of(&bundle(4, b"plan")).check(&mut store).unwrap();
+    drop(store);
+    let mut store = Store::open(temp.path(), baked).unwrap();
+    assert_eq!(store.select().seq, 4);
+    store.follow_environment(&head).unwrap();
+    assert!(Origin::of(&bundle(4, b"conflicting plan"))
+        .check(&mut store)
+        .unwrap_err()
+        .contains("equivocate"));
+    assert!(Origin::of(&bundle(2, b"below embedded"))
+        .check(&mut store)
+        .is_err());
+}
+
+#[test]
+#[cfg_attr(windows, ignore = "Windows durable store is not qualified")]
+fn full_admission_history_refuses_downloads_but_preserves_known_signed_rollback() {
+    use ed25519_dalek::SigningKey;
+    use exact_update::{sha256_hex, Store, Trust};
+    let temp = Temp::new("full-history");
+    let key = SigningKey::from_bytes(&[71; 32]);
+    let mut baked = embedded(&[("test", key.verifying_key().to_bytes())]);
+    baked.trust = Trust::Production;
+    let bundle = |seq, plan: &[u8]| {
+        let mut b = Bundle::new(seq, plan);
+        b.signer = Some(("test".into(), key.clone()));
+        b
+    };
+    let low = bundle(5, b"low");
+    let high = bundle(1_000_000, b"high");
+    let mut store = Store::open(temp.path(), baked.clone()).unwrap();
+    for b in [&low, &high] {
+        Origin::of(b).check(&mut store).unwrap();
+    }
+    drop(store);
+    let path = temp.path().join("record.json");
+    let mut record: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    // Model collected historical entries. Their durable identities remain even
+    // when their executable bytes have been collected.
+    let history = record["admitted"].as_object_mut().unwrap();
+    for seq in 10_u64.. {
+        if history.len() == 8192 {
+            break;
+        }
+        history.insert(seq.to_string(), sha256_hex(&seq.to_le_bytes()).into());
+    }
+    let saved = serde_json::to_vec(&record).unwrap();
+    assert!(saved.len() < 1024 * 1024);
+    std::fs::write(&path, &saved).unwrap();
+    let before = entry_names(&temp);
+    let mut store = Store::open(temp.path(), baked.clone()).unwrap();
+    let mut origin = Origin::of(&bundle(1_000_001, b"new"));
+    assert!(origin
+        .check(&mut store)
+        .unwrap_err()
+        .contains("history is full"));
+    assert_eq!(origin.asked.len(), 1, "only the signed head may be fetched");
+    assert_eq!(
+        entry_names(&temp),
+        before,
+        "no new floor witness may survive refusal"
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), saved);
+    drop(store);
+    let mut store = Store::open(temp.path(), baked.clone()).unwrap();
+    assert_eq!(store.select().seq, 1_000_000);
+    store.boot_started().unwrap();
+    store.boot_succeeded(&store.generation()).unwrap();
+    let head = exact_update::head_url(ORIGIN, "release", COHORT);
+    store.follow_environment(&head).unwrap();
+    Origin::of(&low).check(&mut store).unwrap();
+    drop(store);
+    let mut store = Store::open(temp.path(), baked).unwrap();
+    assert_eq!(store.select().seq, 5);
+    store.follow_environment(&head).unwrap();
+    assert!(Origin::of(&bundle(5, b"conflict"))
+        .check(&mut store)
+        .unwrap_err()
+        .contains("equivocate"));
+    let record: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(record["stream"]["seq"], 1_000_000);
+    assert_eq!(record["admitted"].as_object().unwrap().len(), 8192);
+}
+
 /// A record whose codec is not an integer was written by nobody: it is
 /// damaged, and the client carries on updating rather than freezing as it
 /// does for a newer binary's (numeric) codec.
@@ -190,7 +314,7 @@ fn oversized_local_plan_falls_back_without_losing_the_floor() {
 
 #[test]
 #[cfg_attr(windows, ignore = "Windows durable store is not qualified")]
-fn oversized_record_and_envelope_recover_with_bounded_reads() {
+fn oversized_record_preserves_history_and_oversized_envelope_recovers_with_bounded_reads() {
     let temp = Temp::new("oversized-metadata");
     let six = Bundle::new(6, b"plan six");
     let mut store = open(&temp);
@@ -198,21 +322,23 @@ fn oversized_record_and_envelope_recover_with_bounded_reads() {
         panic!("stage");
     };
     drop(store);
+    let saved = std::fs::read(temp.path().join("record.json")).unwrap();
     std::fs::File::create(temp.path().join("record.json"))
         .unwrap()
         .set_len(4 * 1024 * 1024)
         .unwrap();
-    let mut store = open(&temp);
-    assert_eq!(store.select().entry, None);
-    let lower = Origin::of(&Bundle::new(4, b"plan four"))
-        .check(&mut store)
-        .unwrap_err();
-    assert!(lower.contains("below the accepted seq 6"), "{lower}");
-    assert!(matches!(
-        Origin::of(&six).check(&mut store),
-        Ok(Check::Staged { .. })
-    ));
-    drop(store);
+    let error = open_store(temp.path(), embedded(&[])).err().unwrap();
+    assert!(
+        error.contains("preserving admission history requires repair"),
+        "{error}"
+    );
+    assert_eq!(
+        std::fs::metadata(temp.path().join("record.json"))
+            .unwrap()
+            .len(),
+        4 * 1024 * 1024
+    );
+    std::fs::write(temp.path().join("record.json"), saved).unwrap();
     std::fs::File::create(temp.path().join("entries").join(&entry).join("exact.json"))
         .unwrap()
         .set_len(4 * 1024 * 1024)
