@@ -811,6 +811,10 @@ fn sources(root: &Path) -> Result<BTreeMap<PathBuf, Vec<u8>>, String> {
             }
             let relative = path.strip_prefix(root).unwrap();
             let kind = entry.file_type().map_err(|e| e.to_string())?;
+            // A nested checkout is reference material, not an implicit app source mount.
+            if kind.is_dir() && path.join(".git").exists() {
+                continue;
+            }
             if let Some((_, dir)) = mounts.iter().find(|(m, _)| at == root && **m == *name) {
                 // An editor's link to the mounted directory is allowed and
                 // skipped: the mount itself is captured below. Anything else

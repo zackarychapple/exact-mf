@@ -5,9 +5,11 @@
 //! The tests run on this Mac, whose cells are macOS's: Google through the
 //! host's session, and Apple only with a profile, which `prefer` stands in for.
 
+#[cfg(target_os = "macos")]
+use exact_runner::HoldAnswer;
 use exact_runner::{
-    Answer, CallOrigin, DataError, DataSource, Dispatch, HoldAnswer, Outcome, Reply, Request,
-    Response, Runner, Store, Value, Work,
+    Answer, CallOrigin, DataError, DataSource, Dispatch, Outcome, Reply, Request, Response, Runner,
+    Store, Value, Work,
 };
 use serde_json::{json, Value as Json};
 use std::path::{Path, PathBuf};
@@ -34,6 +36,7 @@ component App
 "#;
 
 const GOOGLE: &str = "https://accounts.google.com/gsi/fedcm.json";
+#[cfg(target_os = "macos")]
 const APPLE: &str = "https://appleid.apple.com";
 const GRANTS: &str = "auth.passkey auth-fixture.exact.test\nauth.google web.apps.googleusercontent.com\nauth.google ios.apps.googleusercontent.com\nauth.apple com.exact.authfixture.web\nnet.fetch http://127.0.0.1:4331\n";
 
@@ -86,6 +89,7 @@ fn google(client: &str) -> Json {
 }
 
 /// A credential `idp.mjs` would make, for `config`.
+#[cfg(target_os = "macos")]
 fn credential(config: &str) -> String {
     json!({ "type": "identity", "id": "", "configURL": config, "isAutoSelected": false,
         "token": "eyJ.fixture.token", "handle": "h-1" })
@@ -208,6 +212,7 @@ impl Host {
     }
 
     /// The capabilities laid over this target's default.
+    #[cfg(target_os = "macos")]
     fn prefer(&mut self, key: &str, value: Json) {
         let op = json!({ "op": "prefer", "extension": { key: value } }).to_string();
         let (_, out) = self.r.extension_agent(&op).unwrap();
@@ -215,6 +220,7 @@ impl Host {
     }
 
     /// A data-code call of `body`: the receiver of its reply.
+    #[cfg(target_os = "macos")]
     fn call(&mut self, body: &Json) -> mpsc::Receiver<Outcome> {
         let (tx, rx) = mpsc::channel();
         match self
@@ -228,11 +234,13 @@ impl Host {
         rx
     }
 
+    #[cfg(target_os = "macos")]
     fn answered(&mut self, body: &Json) -> Json {
         json_of(self.call(body).recv().unwrap())
     }
 }
 
+#[cfg(target_os = "macos")]
 fn json_of(outcome: Outcome) -> Json {
     let Outcome::Response(Response { body, .. }) = outcome else {
         panic!("an answer");

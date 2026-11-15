@@ -341,6 +341,35 @@ function site(app, source) {
 }
 const generationIn = (body) => /<base href="\/\.exact\/gen\/([0-9a-f]{32})\/">/.exec(body)?.[1];
 
+test('source capture excludes nested clones and worktrees', () => {
+  const root = resolve(import.meta.dir, '../..');
+  const dir = mkdtempSync(resolve(tmpdir(), 'exact-reference-capture-'));
+  const app = resolve(dir, 'app'), out = resolve(dir, 'dist');
+  try {
+    site(app, 'shape Note\n  text: string\ncomponent App\n  resource note = note("test") as shape Note\n  view\n    text note.text\n');
+    for (const name of ['clone', 'worktree']) {
+      const repo = resolve(app, 'reference-repos', name);
+      mkdirSync(repo, { recursive: true });
+      if (name === 'clone') mkdirSync(resolve(repo, '.git'));
+      else writeFileSync(resolve(repo, '.git'), 'gitdir: /not-an-app-input');
+      writeFileSync(resolve(repo, 'unrelated.ts'), 'not valid TypeScript');
+      if (process.platform !== 'win32') symlinkSync('missing', resolve(repo, 'build-output'));
+    }
+    const build = () => spawnSync(process.execPath, ['host/web/build.mjs', app, '--out', out], {
+      cwd: root, env: { ...process.env, EXACT_APP_DIR: app }, encoding: 'utf8',
+    });
+    const result = build();
+    expect(result.status, result.stdout + result.stderr).toBe(0);
+    writeFileSync(resolve(app, 'app.ts'), readFileSync(resolve(app, 'app.ts'), 'utf8') + '\nimport "./reference-repos/clone/unrelated";\n');
+    const refused = build();
+    expect(refused.signal).toBeNull();
+    expect(refused.status).not.toBe(0);
+    expect(refused.stderr).toContain("Cannot find module or type declarations for side-effect import of './reference-repos/clone/unrelated'");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}, 60000);
+
 /** serve.mjs on `out` as the `serve` verb runs it (`--loopback`), on a free port: `get(path)` a navigation's answer,
  * `renders(path)` how many pages of it serve said it rendered, `heard(done)` once what it said satisfies `done`. */
 async function serving(root, out, { fromEnv = false } = {}) {
