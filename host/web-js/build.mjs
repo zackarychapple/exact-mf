@@ -304,6 +304,8 @@ async function typecheck(checking) {
       // Nor is what a build in `dist` keeps beside it (`web-build --out dist`: serve.mjs `replaceBuild`, generations.mjs).
       if (top && besideDist(name)) continue;
       if (top && mounts.some(([mount]) => mount === name)) continue;
+      // Match native capture: nested checkouts are not implicit app source mounts.
+      if (entry.isDirectory() && existsSync(resolve(path, '.git'))) continue;
       // Links are refused, except a document link outside the static trees
       // (CLAUDE.md → AGENTS.md), as js/bake's capture: no build reads one.
       if (entry.isSymbolicLink()) {

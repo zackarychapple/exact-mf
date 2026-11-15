@@ -36,6 +36,7 @@ fn captures_fonts_and_complete_static_trees_without_following_links() {
     let app = Scratch::new(&std::env::temp_dir()).unwrap();
     let inputs = [
         ("app.ts", &b"export const appId = 'test.assets';"[..]),
+        ("reference-repos/helper.ts", &b"export const value = 1;"[..]),
         ("fonts/face.ttf", &b"font bytes"[..]),
         ("fonts/face.otf", &b"other font bytes"[..]),
         ("assets/icons/menu.svg", &b"<svg/>"[..]),
@@ -50,6 +51,19 @@ fn captures_fonts_and_complete_static_trees_without_following_links() {
         std::fs::write(path, bytes).unwrap();
     }
     std::fs::write(app.0.join("private.bin"), b"not an app asset").unwrap();
+    // Clones and worktrees beneath the app are not source dependencies.
+    for (name, worktree) in [("clone", false), ("worktree", true)] {
+        let repo = app.0.join("reference-repos").join(name);
+        std::fs::create_dir_all(&repo).unwrap();
+        if worktree {
+            std::fs::write(repo.join(".git"), b"gitdir: /not-an-app-input").unwrap();
+        } else {
+            std::fs::create_dir(repo.join(".git")).unwrap();
+        }
+        std::fs::write(repo.join("unrelated.ts"), b"not valid TypeScript").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink("missing", repo.join("build-output")).unwrap();
+    }
     // The driver's test file is no build's input.
     std::fs::write(app.0.join("app.test.contract"), b"test \"t\"\n").unwrap();
     // Nor is the app's `.exact/`: an agent's evidence and runtime files.
