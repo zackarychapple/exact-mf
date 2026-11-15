@@ -96,6 +96,18 @@ pub(super) fn read_card(path: &Path, card: &FileCard) -> Result<Vec<u8>, String>
     Ok(bytes)
 }
 
+/// Never replace a record with bytes the next process cannot read.
+pub(super) fn write_record(path: &Path, bytes: &[u8], durable: bool) -> Result<(), String> {
+    if bytes.len() as u64 > super::MAX_RECORD_BYTES {
+        return Err(format!(
+            "update record is {} bytes, exceeds {}; admission history was not discarded",
+            bytes.len(),
+            super::MAX_RECORD_BYTES
+        ));
+    }
+    write_atomic(path, bytes, durable)
+}
+
 /// Write a new file, making its directories, and sync it to disk before
 /// returning: a rename that publishes it must never outlive its bytes.
 pub(super) fn write_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
@@ -223,6 +235,28 @@ impl Blobs {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn durable_records_and_boot_marks_never_replace_readable_bytes_with_oversized_bytes() {
+        let path = std::env::temp_dir().join(temporary_name());
+        let mut bytes = b"{}".to_vec();
+        bytes.resize(super::super::MAX_RECORD_BYTES as usize, b' ');
+        for durable in [true, false] {
+            write_record(&path, &bytes, durable).unwrap();
+            let mut oversized = bytes.clone();
+            oversized.push(b' ');
+            let error = write_record(&path, &oversized, durable).unwrap_err();
+            assert!(
+                error.contains("admission history was not discarded"),
+                "{error}"
+            );
+            assert_eq!(
+                read_bounded(&path, super::super::MAX_RECORD_BYTES).unwrap(),
+                bytes
+            );
+        }
+        std::fs::remove_file(path).unwrap();
+    }
 
     #[test]
     fn oversized_card_is_refused_before_reading_its_bytes() {

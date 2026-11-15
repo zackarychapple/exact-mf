@@ -32,6 +32,13 @@
 //!   socket and links no TLS. Windows durable storage is unqualified;
 //!   [`Store::open`] refuses there before touching any store files.
 //!   Pure envelope, signature and baked-binary operations remain available.
+//! - Admission history retains at most 8192 distinct sequence identities per
+//!   stream. Once full, new sequences are refused before their artifacts are
+//!   downloaded; known releases still use the configured rollback policy.
+//!   Identities are never evicted to make room. Both record writers refuse
+//!   output above 1 MiB, and opening an oversized record fails without replacing
+//!   it. Extending this capacity requires a new durable-history design, not
+//!   deleting history or resetting the store.
 //! - It never boots anything: [`Store::prepare_selected`] and
 //!   [`Store::prepare_activation`] pin verified bytes; the host accepts
 //!   its whole app before [`Store::commit_activation`] changes the record.

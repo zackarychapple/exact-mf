@@ -6,16 +6,6 @@
 //! boot path. Each stream has its own path on the origin. Check and activate
 //! are two acts. An unknown record codec selects entry zero and is left alone.
 //!
-//! The shape on disk:
-//!
-//! ```text
-//! record.json                              { codec, selected, lastGood, failures, stream, bad }
-//! blobs/<sha256>                            each file's bytes, once, verified before reuse
-//! entries/<canonical envelope sha256>/exact.json  the head, as it arrived
-//! entries/<envelope sha256>/app.plan        a hard link to its blob (a copy where refused)
-//! entries/<envelope sha256>/assets/<name>   likewise
-//! entries/.tmp-<something>/                 an entry being built; never selected
-//! ```
 //! A Current head keeps only `exact.json` as its durable signed floor witness.
 //!
 //! Only the selected, pending, last-good and running entries and the head
@@ -358,6 +348,7 @@ impl Record {
 }
 /// What was on disk where the record lives.
 enum RecordFile {
+    Oversized,
     /// No record, or one that is not a record of any codec (unreadable, not
     /// JSON, or with no integer codec): start fresh.
     Fresh,
@@ -370,7 +361,11 @@ enum RecordFile {
     Ours(Box<Record>),
 }
 const MAX_RECORD_BYTES: u64 = 1024 * 1024;
+const MAX_ADMITTED_SEQUENCES: usize = 8192;
 fn read_record(path: &Path) -> RecordFile {
+    if std::fs::metadata(path).is_ok_and(|m| m.len() > MAX_RECORD_BYTES) {
+        return RecordFile::Oversized;
+    }
     let Ok(raw) = read_bounded(path, MAX_RECORD_BYTES) else {
         return RecordFile::Fresh;
     };
@@ -503,6 +498,10 @@ impl Store {
         };
         let mut rewrite = false;
         match read_record(&store.record_path()) {
+            RecordFile::Oversized => return Err(
+                "update record exceeds 1048576 bytes; preserving admission history requires repair"
+                    .into(),
+            ),
             RecordFile::Foreign => {
                 store.frozen = true;
                 store.record = Record::fresh(&store.embedded);
@@ -940,6 +939,14 @@ impl Store {
         // Check the entire roster before Current can advance the observed
         // floor and before either whole-entry or digest reuse can return.
         validate_card_urls(head_url, envelope)?;
+        if self.record.admitted.len() >= MAX_ADMITTED_SEQUENCES
+            && !self.record.admitted.contains_key(&envelope.stream.seq)
+        {
+            return Err(
+                "admission history is full (8192 sequences); existing identities were retained"
+                    .into(),
+            );
+        }
         let floor = self
             .embedded
             .seq
@@ -1277,7 +1284,7 @@ impl Store {
         if self.frozen {
             return Ok(());
         }
-        write_atomic(&self.record_path(), self.record.to_json().as_bytes(), true)
+        disk::write_record(&self.record_path(), self.record.to_json().as_bytes(), true)
     }
 
     /// Write a boot mark — the failure count, the last-good bundle — whole
@@ -1290,7 +1297,7 @@ impl Store {
         if self.frozen {
             return Ok(());
         }
-        write_atomic(&self.record_path(), record.to_json().as_bytes(), false)
+        disk::write_record(&self.record_path(), record.to_json().as_bytes(), false)
     }
 
     /// Build one entry under a temporary name and rename it into place. Whole
