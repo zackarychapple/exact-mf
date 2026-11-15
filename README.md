@@ -52,9 +52,15 @@ It does not prove live HTTPS availability or device rendering.
 
 ## Publication and recording
 
-`deployment.json` records the Zephyr site identifiers. Its hostname is provisional until root verifies it.
-Root owns upload, stable promotion, device installation, and recording.
-Select Zephyr build 18845 (v1) or 18846 (v2) on the stable environment while the app remains open.
+`deployment.json` records the verified Zephyr site and stable HTTPS origin.
+
+1. Open `zackarychapple / exact-mf / visual-remote` in Zephyr.
+2. Open Versions and select build 18845 for blue v1 or 18846 for orange v2.
+3. Deploy that build to the `demo` environment.
+4. Keep the simulator app open while Zephyr propagates the selection.
+
+The app checks every two seconds. Edge propagation can delay the visible change.
+Repeat these steps in either direction. Existing signed builds need no rebuild or new publication.
 The opt-in policy permits repeated transitions in either direction, including a sandbox that already selected sequence 2.
 The predecessor remains active until the native owner accepts the complete candidate and commits its generation token.
 The runtime does not require any `/tmp` file.
