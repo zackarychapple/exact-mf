@@ -54,7 +54,7 @@ fails before the link changes. Reconfigure after moving either checkout.
 
 ## Dependencies
 
-Use Bun 1.4.2 and Exact commit `30150b9538fef7ab55eaebc669db2402363f7438`.
+Use Bun 1.4.2 and Exact commit `4d902586fd2a6a207ffa02d0b3a66076b65cf026`.
 Cargo manifests reference the configured checkout by path. The generated plans use format 5.
 The old format 4 proof and its `/tmp` evidence remain unchanged.
 The native MF artifact uses Exact's maintained `buildNativeFederation` API. The Bun lock pins all three upstream packages to 2.9.3.
