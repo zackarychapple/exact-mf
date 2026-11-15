@@ -28,7 +28,7 @@
 //! - [`executor`] — `ibex2::host` on a worker thread for a request that
 //!   leaves the process, its wake a socketpair the loop polls.
 //! - [`delivery`] — the optional app-supplied delivery adapter boundary;
-//! no updater is linked by the host.
+//!   no updater is linked by the host.
 //! - [`journal`] — the event journal launch parts subscribe to: startup,
 //!   custom events, errors.
 //! - [`launch_marks`] — startup timestamps for the display path.
