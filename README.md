@@ -40,18 +40,41 @@ git clone --branch exact-runtime https://github.com/zackarychapple/exact-mf.git 
 git -C exact-runtime checkout "$(cat exact-mf/EXACT_REVISION)"
 ```
 
-The checked-in Cargo paths currently name the original development checkout shown below.
-For another directory, update those paths in the root, native, tools, and validation manifests.
-Set `EXACT2` to the runtime directory for the Bun build scripts.
-Setting `EXACT2` alone does not change Cargo dependency paths.
+Select the checkout once from the example directory:
+
+```sh
+EXACT2=../exact-runtime bun tools/configure-exact.mjs
+```
+
+This validates `EXACT_REVISION` before creating the ignored `.exact/runtime` link.
+All Cargo manifests and build scripts use that same checkout. `EXACT2` may name
+another directory, including `reference-repos/exact-runtime`; relative paths are
+resolved from this example. Subsequent commands reuse the link. A revision mismatch
+fails before the link changes. Reconfigure after moving either checkout.
 
 ## Dependencies
 
-Use Bun 1.4.2 and Exact commit `cbb3ae319bd761d4e3d339b464e7a420b0c6383a` at `/Users/zackarychapple/code/t3/exact`.
-Cargo manifests currently reference that checkout by path. The generated plans use format 5.
+Use Bun 1.4.2 and Exact commit `24033cdbf23bbdbfd3023f491f84dc5c54369361`.
+Cargo manifests reference the configured checkout by path. The generated plans use format 5.
 The old format 4 proof and its `/tmp` evidence remain unchanged.
 The native MF artifact uses Exact's maintained `buildNativeFederation` API. The Bun lock pins all three upstream packages to 2.9.3.
 Use the Hermes compiler from Exact's attested local bundle. `HERMESC` can override its path.
+
+Install Exact's Bun dependencies with `bun install --frozen-lockfile` in that checkout.
+Provision its pinned Hermes host and simulator bundles before building:
+
+```sh
+# In the Exact checkout on an Apple Silicon Mac:
+cargo run --manifest-path vendor/ibex/crates/hermes-lean-sys-installer/Cargo.toml -- --target aarch64-apple-darwin --target aarch64-apple-ios-sim
+rustup target add aarch64-apple-ios-sim
+```
+
+The shell helpers use `BUN`, then `~/.bun-1.4.2/bin/bun`, then `bun` on PATH, and
+require version 1.4.2. Direct Cargo commands require checkout configuration first.
+The root workspace explicitly excludes Exact's independent vendored workspaces.
+The pinned Apple host references iOS 27.1 APIs, including `UIArrangementViewController`.
+Xcode's iOS 26.5 SDK cannot compile that host; select an Xcode installation with
+the required SDK using `DEVELOPER_DIR` before the simulator build.
 
 ## Reproduce
 
@@ -59,7 +82,7 @@ Use the Hermes compiler from Exact's attested local bundle. `HERMESC` can overri
 2. Run `bun tools/create-key.mjs` if the private demo key does not exist.
 3. Set `DEMO_SIGNING_KEY` to that file. The local default is `$HOME/.config/exact-mf/demo-signing.key`.
 4. Run `tools/sign-remotes.sh`.
-5. Run `CARGO_TARGET_DIR="$PWD/target" cargo test --manifest-path validation/Cargo.toml`.
+5. Run `tools/validate.sh` (configures the pinned checkout and Bun for Cargo).
 6. Set `EXACT_MF_ORIGIN` to the verified stable HTTPS origin.
 7. Run `tools/build-host.sh`.
 8. Read `.exact/host-app.txt` for the installable HOST app path.

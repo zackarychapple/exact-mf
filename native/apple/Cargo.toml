@@ -10,17 +10,17 @@ build = "build.rs"
 crate-type = ["rlib"]
 
 [dependencies]
-exact-logic = { path = "/Users/zackarychapple/code/t3/exact/logic" }
-exact-apple = { path = "/Users/zackarychapple/code/t3/exact/host/apple" }
-exact-apple-update = { path = "/Users/zackarychapple/code/t3/exact/host/apple-update" }
-exact-js = { path = "/Users/zackarychapple/code/t3/exact/js" }
+exact-logic = { path = "../../.exact/runtime/logic" }
+exact-apple = { path = "../../.exact/runtime/host/apple" }
+exact-apple-update = { path = "../../.exact/runtime/host/apple-update" }
+exact-js = { path = "../../.exact/runtime/js" }
 
 sha2 = "=0.10.9"
 serde_json = "1"
-contract = { path = "/Users/zackarychapple/code/t3/exact/contract/cli" }
-exact-runner = { path = "/Users/zackarychapple/code/t3/exact/runner" }
-exact-update = { path = "/Users/zackarychapple/code/t3/exact/update" }
-ibex2 = { path = "/Users/zackarychapple/code/t3/exact/vendor/ibex/crates/ibex2", default-features = false }
+contract = { path = "../../.exact/runtime/contract/cli" }
+exact-runner = { path = "../../.exact/runtime/runner" }
+exact-update = { path = "../../.exact/runtime/update" }
+ibex2 = { path = "../../.exact/runtime/vendor/ibex/crates/ibex2", default-features = false }
 
 [build-dependencies]
-exact-js-bake = { path = "/Users/zackarychapple/code/t3/exact/js/bake" }
+exact-js-bake = { path = "../../.exact/runtime/js/bake" }

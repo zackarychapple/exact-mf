@@ -1,5 +1,5 @@
 {
-  "$schema": "/Users/zackarychapple/code/t3/exact/scripts/app.schema.json",
+  "$schema": ".exact/runtime/scripts/app.schema.json",
   "name": "Exact Live Remote",
   "short_name": "Exact Mf Joined Sol App",
   "id": "com.zephyr.exact.mf.recording.d20261114",
