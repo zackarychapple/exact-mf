@@ -1,4 +1,5 @@
-const {buildNativeFederation} = await import((process.env.EXACT2 ?? '/Users/zackarychapple/code/t3/exact') + '/js/bake/src/native_federation.mjs');
+import {configureExact} from './configure-exact.mjs';
+const {buildNativeFederation} = await import(configureExact() + '/js/bake/src/native_federation.mjs');
 import {mkdirSync,writeFileSync} from 'node:fs';
 import {spawnSync} from 'node:child_process';
 mkdirSync('.exact',{recursive:true});

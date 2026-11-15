@@ -3,6 +3,14 @@
 # own beside app.json, which is used instead.
 [workspace]
 members = ["native/web", "native/apple"]
+# These dependencies own independent workspaces; Cargo must not adopt them through the local link.
+exclude = [
+    ".exact/runtime",
+    ".exact/runtime/vendor/ibex/crates/ibex2",
+    ".exact/runtime/vendor/ibex/crates/hermes-lean-sys",
+    ".exact/runtime/vendor/ibex/crates/ibex2-sqlite",
+    "reference-repos",
+]
 resolver = "2"
 
 [workspace.package]
@@ -11,8 +19,8 @@ version = "0.1.0"
 license = "MIT"
 
 [patch.crates-io]
-accesskit_windows = { path = "/Users/zackarychapple/code/t3/exact/vendor/accesskit-windows" }
-taffy = { path = "/Users/zackarychapple/code/t3/exact/vendor/taffy" }
-parley = { path = "/Users/zackarychapple/code/t3/exact/vendor/parley" }
-fontique = { path = "/Users/zackarychapple/code/t3/exact/vendor/fontique" }
-wgpu-hal = { path = "/Users/zackarychapple/code/t3/exact/vendor/wgpu-hal" }
+accesskit_windows = { path = ".exact/runtime/vendor/accesskit-windows" }
+taffy = { path = ".exact/runtime/vendor/taffy" }
+parley = { path = ".exact/runtime/vendor/parley" }
+fontique = { path = ".exact/runtime/vendor/fontique" }
+wgpu-hal = { path = ".exact/runtime/vendor/wgpu-hal" }

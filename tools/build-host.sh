@@ -1,8 +1,7 @@
 #!/bin/sh
 set -eu
 cd "$(dirname "$0")/.."
-: "${EXACT2:=/Users/zackarychapple/code/t3/exact}"
-: "${BUN:=$HOME/.bun-1.4.2/bin/bun}"
+. ./tools/runtime-env.sh
 : "${EXACT_MF_ORIGIN:=$("$BUN" -e 'console.log(require("./deployment.json").origin)')}"
 printf '%s' "$EXACT_MF_ORIGIN" > resources/origin.txt
 export BUN

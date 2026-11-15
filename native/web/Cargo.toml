@@ -10,10 +10,10 @@ build = "build.rs"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-exact-logic = { path = "/Users/zackarychapple/code/t3/exact/logic" }
-exact-web = { path = "/Users/zackarychapple/code/t3/exact/host/web" }
-exact-web-capabilities = { path = "/Users/zackarychapple/code/t3/exact/host/web-capabilities" }
-exact-js-web = { path = "/Users/zackarychapple/code/t3/exact/js/web" }
+exact-logic = { path = "../../.exact/runtime/logic" }
+exact-web = { path = "../../.exact/runtime/host/web" }
+exact-web-capabilities = { path = "../../.exact/runtime/host/web-capabilities" }
+exact-js-web = { path = "../../.exact/runtime/js/web" }
 
 [build-dependencies]
-exact-js-bake = { path = "/Users/zackarychapple/code/t3/exact/js/bake" }
+exact-js-bake = { path = "../../.exact/runtime/js/bake" }
