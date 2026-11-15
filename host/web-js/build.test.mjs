@@ -362,8 +362,9 @@ test('source capture excludes nested clones and worktrees', () => {
     expect(result.status, result.stdout + result.stderr).toBe(0);
     writeFileSync(resolve(app, 'app.ts'), readFileSync(resolve(app, 'app.ts'), 'utf8') + '\nimport "./reference-repos/clone/unrelated";\n');
     const refused = build();
+    expect(refused.signal).toBeNull();
     expect(refused.status).not.toBe(0);
-    expect(refused.stderr).toContain('outside captured app');
+    expect(refused.stderr).toContain("Cannot find module or type declarations for side-effect import of './reference-repos/clone/unrelated'");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
