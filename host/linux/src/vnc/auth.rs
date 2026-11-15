@@ -26,6 +26,25 @@ fn response(key: &[u8; 8], challenge: [u8; 16]) -> [u8; 16] {
     answer
 }
 
+#[cfg(test)]
+pub(super) fn client_handshake(stream: &mut TcpStream, key: &[u8; 8]) -> io::Result<()> {
+    let mut version = [0; 12];
+    stream.read_exact(&mut version)?;
+    assert_eq!(&version, b"RFB 003.008\n");
+    stream.write_all(&version)?;
+    let mut offered = [0; 2];
+    stream.read_exact(&mut offered)?;
+    assert_eq!(offered, [1, 2]);
+    stream.write_all(&[2])?;
+    let mut challenge = [0; 16];
+    stream.read_exact(&mut challenge)?;
+    stream.write_all(&response(key, challenge))?;
+    let mut status = [0; 4];
+    stream.read_exact(&mut status)?;
+    assert_eq!(status, [0; 4]);
+    Ok(())
+}
+
 /// RFB security type 2: https://www.rfc-editor.org/rfc/rfc6143#section-7.2.2
 pub(super) fn handshake(stream: &mut TcpStream, key: &[u8; 8]) -> io::Result<()> {
     stream.set_read_timeout(Some(Duration::from_secs(10)))?;
@@ -109,6 +128,11 @@ mod tests {
                     let (mut stream, _) = listener.accept().unwrap();
                     handshake(&mut stream, &password_key(b"secret").unwrap()).is_ok()
                 });
+                if minor == 8 && correct {
+                    client_handshake(&mut client, &password_key(b"secret").unwrap()).unwrap();
+                    assert!(server.join().unwrap());
+                    continue;
+                }
                 let mut version = [0; 12];
                 client.read_exact(&mut version).unwrap();
                 client

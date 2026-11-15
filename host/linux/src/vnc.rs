@@ -497,16 +497,12 @@ mod tests {
             height: 1,
         });
         let server = shared.clone();
-        let task = thread::spawn(move || serve(listener.accept().unwrap().0, server));
+        let task = thread::spawn(move || serve(listener.accept().unwrap().0, server, [0; 8]));
         let mut client = TcpStream::connect(addr).unwrap();
         client
             .set_read_timeout(Some(std::time::Duration::from_secs(3)))
             .unwrap();
-        assert_eq!(&read_exact::<12>(&mut client).unwrap(), b"RFB 003.008\n");
-        client.write_all(b"RFB 003.008\n").unwrap();
-        assert_eq!(read_exact::<2>(&mut client).unwrap(), [1, 1]);
-        client.write_all(&[1]).unwrap();
-        assert_eq!(read_exact::<4>(&mut client).unwrap(), [0; 4]);
+        auth::client_handshake(&mut client, &[0; 8]).unwrap();
         client.write_all(&[1]).unwrap();
         let init = read_exact::<24>(&mut client).unwrap();
         drain(
@@ -587,18 +583,14 @@ mod contact_tests {
             stream
                 .set_read_timeout(Some(Duration::from_secs(2)))
                 .unwrap();
-            let result = serve(stream, server);
+            let result = serve(stream, server, [0; 8]);
             finished.send(result.map_err(|e| e.kind())).unwrap();
         });
         let mut client = TcpStream::connect(address).unwrap();
         client
             .set_read_timeout(Some(Duration::from_secs(2)))
             .unwrap();
-        assert_eq!(&read_exact::<12>(&mut client).unwrap(), b"RFB 003.008\n");
-        client.write_all(b"RFB 003.008\n").unwrap();
-        assert_eq!(read_exact::<2>(&mut client).unwrap(), [1, 1]);
-        client.write_all(&[1]).unwrap();
-        read_exact::<4>(&mut client).unwrap();
+        auth::client_handshake(&mut client, &[0; 8]).unwrap();
         client.write_all(&[1]).unwrap();
         let init = read_exact::<24>(&mut client).unwrap();
         drain(
